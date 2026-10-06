@@ -1,0 +1,20 @@
+---
+title: "Writer Identification from Handwriting using Neural Networks"
+authors: "Karabo Matje, Innocetia Nemukula and Ludwick Hlongwane"
+date: today
+output-file: index.html
+---
+
+## 1. Data exploration
+
+## 2. Convolutional Neural Network (CNN)
+
+## 3. Siamese network
+
+## 4. Train, validation and test strategy
+
+## 5. Hyperparameter optimisation
+
+## 6. Comparison and discussion
+
+## 
