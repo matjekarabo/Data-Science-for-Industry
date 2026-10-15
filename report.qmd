@@ -1,20 +1,1134 @@
+get---
+title: "STA5073Z Assignment 2: Writer identification from handwritten digits"
+subtitle: "Working draft: Tasks 1 to 3 (later sections to follow)"
+author: "Group members: add names here"
+bibliography: references.bib
+csl: apa.csl
+link-citations: true
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    code-fold: true
+    code-summary: "Show code"
+    code-tools: true
+    fig-width: 7
+    fig-height: 4.2
+    fig-dpi: 150
+    fig-cap-location: bottom
+    tbl-cap-location: top
+execute:
+  warning: false
+  message: false
 ---
-title: "Writer Identification from Handwriting using Neural Networks"
-authors: "Karabo Matje, Innocetia Nemukula and Ludwick Hlongwane"
-date: today
-output-file: index.html
----
 
-## 1. Data exploration
+```{r}
+#| label: setup
+#| include: false
+# One-off set-up: installs missing packages and points R at one clean Python
+# environment for Keras (this avoids reticulate's "Failed to inspect Python" error).
+Sys.setenv(RETICULATE_USE_MANAGED_VENV = "no")
 
-## 2. Convolutional Neural Network (CNN)
+pkgs <- c("keras3", "tensorflow", "reticulate", "ggplot2")
+missing_pkgs <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_pkgs)) install.packages(missing_pkgs, repos = "https://cloud.r-project.org")
 
-## 3. Siamese network
+venv_name <- "r-keras"
+if (!reticulate::virtualenv_exists(venv_name)) {
+  local_app <- Sys.getenv("LOCALAPPDATA")
+  candidates <- c(
+    file.path(local_app, "Programs", "Python", c("Python311", "Python312", "Python313"), "python.exe"),
+    "C:/Program Files/Python311/python.exe", "C:/Program Files/Python312/python.exe",
+    "C:/Program Files/Python313/python.exe",
+    "/usr/local/bin/python3.11", "/usr/local/bin/python3.12",
+    "/opt/homebrew/bin/python3.11", "/opt/homebrew/bin/python3.12",
+    Sys.which("python3"), Sys.which("python")
+  )
+  candidates <- candidates[nzchar(candidates) & file.exists(candidates)]
+  candidates <- candidates[!grepl("WindowsApps", candidates, fixed = TRUE)]   # Windows Store stub
+  if (!length(candidates)) stop("No Python found. Install Python 3.11.9 from python.org, then render again.")
+  reticulate::virtualenv_create(venv_name, python = candidates[1])
+  reticulate::virtualenv_install(venv_name, c("tensorflow", "keras"))
+}
+Sys.setenv(RETICULATE_PYTHON = reticulate::virtualenv_python(venv_name))
 
-## 4. Train, validation and test strategy
+library(keras3)
+use_backend("tensorflow")
 
-## 5. Hyperparameter optimisation
+library(ggplot2)
+# Colour-blind-safe palette (Okabe-Ito) and one plain theme for every figure
+okabe <- c(blue = "#0072B2", orange = "#E69F00", green = "#009E73", red = "#D55E00", grey = "#7F7F7F")
+theme_set(theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(),
+        plot.caption = element_text(colour = "grey30", size = 8, hjust = 0),
+        legend.position = "bottom"))
 
-## 6. Comparison and discussion
+# Helpers used when reporting numbers
+pc <- function(v, d = 1) paste0(formatC(100 * v, format = "f", digits = d), "%")
+f2 <- function(v, d = 2) formatC(v, format = "f", digits = d)
+options(knitr.kable.NA = "-")   # show "-" instead of NA in tables
+fp <- function(p) if (p < 1e-16) "< 1e-16" else paste("=", formatC(p, format = "e", digits = 1))
 
-## 
+# Find the data whether it sits in data/ or next to this file
+data_path <- if (file.exists("data/handwriting.rds")) "data/handwriting.rds" else "handwriting.rds"
+```
+
+# Introduction {#sec-intro}
+
+Handwriting is individual enough that examiners routinely use it to judge who wrote a document. @srihari2002 analysed samples from 1,500 writers and reported that a statistical model could tell, with about 96% confidence, whether two handwriting samples came from the same writer. Deep learning has since been applied to the same problem. Convolutional neural networks (CNNs), whose use for digit recognition was established by @lecun1998, have been used to identify writers from images of their handwriting [@fiel2015; @xing2016]. Deciding whether two samples share an author can instead be treated as a similarity-learning problem. @bromley1993 introduced the "Siamese" architecture for signature verification, in which two inputs pass through the same network with shared weights and are compared in the output space.
+
+This report works with a simulated data set of 25 000 images of handwritten digits (0 to 4) from 20 writers, each recorded in five sessions. We first explore the data (Task 1), then build a CNN that identifies the writer (Task 2) and a Siamese network that decides whether two images share a writer (Task 3). The images within a writer–digit–session combination are near copies of one another, so the way the data are split matters as much as the model. We treat the split as an explicit design decision from the start, and later sections build on these results to examine the evaluation strategy, hyperparameter sensitivity and a comparison of the two models.
+
+# Task 1: Exploration of the data {#sec-task1}
+
+We first checked the structure of the data and then looked at images in three ways, each holding everything fixed except one factor: all 20 writers for one digit, ten writers' versions of one digit across the five sessions, and the same ten writers' replicates within one session. To put numbers on what the images show, we computed the Euclidean distance between pixel vectors (784 values scaled to [0, 1]) for 1000 random draws. Each draw gives three same-digit distances from one reference image: to another image by the same writer in the same session (within-session), to an image by the same writer in a different session (across-session), and to an image by a different writer in the same session (between-writer).
+
+**Statistics.** The three distances in a draw share a reference image, so they are matched. We compare them with a Friedman test [@friedman1937], follow up with paired Wilcoxon signed-rank tests [@wilcoxon1945] adjusted with Holm's method [@holm1979], and report the paired effect size $d_z$ [@lakens2013]. Intervals are percentile bootstrap intervals from 2000 resamples of the draws [@efron1979].
+
+```{r}
+#| label: task1-load
+##Task 1: Exploration of the data
+
+data <- readRDS(data_path)
+dim(data$images)
+head(data$metadata)
+metadata <- data$metadata
+
+#This gets the data ready for the neural network
+x <- data$images / 255 #makes copy of images with every pixel divided by 255 so
+#values run from 0 to 1. Neural networks learn better with smaller numbers
+#takes writer ids and makes it 0 to 19 instead of 1 to 20, keras start counting from 0
+y_person <- data$metadata$person_id - 1L
+#x is what the model looks at (images) then y is the person (or our answer that we are trying to predict.)
+
+
+table(metadata$person_id, metadata$session) #250 images per person per session
+range(table(metadata$person_id, metadata$session)) # ADDED: compact balance check (min and max cell)
+```
+
+## Variation across writers, sessions and replicates
+
+```{r}
+#| label: fig-t1-writers
+#| fig-cap: "All 20 writers for one digit (session 1, replicate 1)."
+#| fig-subcap: ["Digit 0", "Digit 1", "Digit 2", "Digit 3", "Digit 4"]
+#| layout-ncol: 1
+#| fig-width: 7
+#| fig-height: 6
+##In each plot, the digits, session and replicate are fixed
+#Function that draws a single image
+draw_image <- function(i){
+  m <- data$images[i,,,1]
+  image(t(m[28:1,]), col = gray.colors(256, start = 1, end = 0),
+        axes = FALSE, asp = 1)
+
+}
+
+#All 20 writers for one digit
+plot_writers <-  function(d,s = 1, r = 1){ #s = session, r = replicate
+  plot_settings <- par(mfrow = c(4,5), mar = c(0.3, 0.3, 1.5, 0.3), oma = c(0, 0, 2.5, 0))
+  on.exit(par(plot_settings))
+
+  for (p in 1:20){
+    i <- which(metadata$person_id == p & metadata$digit == d &
+               metadata$session == s & metadata$replicate == r)
+    draw_image(i)
+    title(paste("Writer", p), cex.main = 0.9)
+  }
+  mtext(paste0("Digit ", d, "(session ", s, ", replicate ", r, ")"),
+        outer = TRUE, font = 2)
+}
+
+##plots of the digits
+for (d in 0:4) plot_writers(d)
+```
+
+```{r}
+#| label: fig-t1-sessions
+#| fig-cap: "One digit for a random sample of ten writers across the five sessions (replicate 1)."
+#| fig-subcap: ["Digit 0", "Digit 1", "Digit 2", "Digit 3", "Digit 4"]
+#| layout-ncol: 1
+#| fig-width: 6
+#| fig-height: 10
+plot_sessions_sample <- function(d, n_people = 10, r = 1, seed = 1){
+  # d = digit, r = replicate (fixed), seed = makes the sample reproducible
+  set.seed(seed)
+  people <- sort(sample(1:20, n_people))
+
+  plot_settings <- par(mfrow = c(n_people, 5), mar = c(0.2, 0.2, 1.2, 0.2),
+                       oma = c(0, 5, 2.5, 0), xpd = NA)  # wider left margin so "Writer 11" is not clipped
+  on.exit(par(plot_settings))
+
+  for (p in people){
+    for (s in 1:5){
+      i <- which(metadata$person_id == p & metadata$digit == d &
+                   metadata$session == s & metadata$replicate == r)
+      draw_image(i)
+      if (p == people[1]) title(paste("Session", s), cex.main = 0.9)  # column labels on top row only
+      if (s == 1) mtext(paste("Writer", p), side = 2, line = 0.5, las = 1, cex = 0.7)  # row labels on first column only
+    }
+  }
+  mtext(paste0("Digit ", d, " across sessions (replicate ", r, ")"),
+        outer = TRUE, font = 2)
+}
+
+for (d in 0:4) plot_sessions_sample(d)
+```
+
+```{r}
+#| label: fig-t1-replicates
+#| fig-cap: "One digit for the same ten writers across five replicates within session 1."
+#| fig-subcap: ["Digit 0", "Digit 1", "Digit 2", "Digit 3", "Digit 4"]
+#| layout-ncol: 1
+#| fig-width: 6
+#| fig-height: 10
+plot_replicates <- function(d, s = 1, n_people = 10, reps = c(1, 11, 21, 31, 41), seed = 1){
+  # d = digit, s = session (fixed), reps = which replicates to show
+  set.seed(seed)
+  people <- sort(sample(1:20, n_people))
+
+  plot_settings <- par(mfrow = c(n_people, length(reps)), mar = c(0.2, 0.2, 1.2, 0.2),
+                       oma = c(0, 5, 2.5, 0), xpd = NA)
+  on.exit(par(plot_settings))
+
+  for (p in people){
+    for (r in reps){
+      i <- which(metadata$person_id == p & metadata$digit == d &
+                   metadata$session == s & metadata$replicate == r)
+      draw_image(i)
+      if (p == people[1]) title(paste("Replicate", r), cex.main = 0.9)
+      if (r == reps[1]) mtext(paste("Writer", p), side = 2, line = 0.5, las = 1, cex = 0.7)
+    }
+  }
+  mtext(paste0("Digit ", d, " across replicates (session ", s, ")"),
+        outer = TRUE, font = 2)
+}
+
+for (d in 0:4) plot_replicates(d)
+```
+
+## Within-session, across-session and between-writer distances
+
+```{r}
+#| label: task1-distances
+# Flatten each 28x28 image into one row of 784 pixel values (scaled 0-1)
+x_flat <- matrix(data$images / 255, nrow = dim(data$images)[1])
+
+# Find the row number of one specific image
+get_i <- function(p, d, s, r){
+  which(metadata$person_id == p & metadata$digit == d &
+          metadata$session == s & metadata$replicate == r)
+}
+
+# Euclidean distance between two images (given their row numbers)
+dist_img <- function(a, b) sqrt(sum((x_flat[a, ] - x_flat[b, ])^2))
+
+set.seed(1)
+n <- 1000
+results <- data.frame(type = character(), digit = integer(), dist = numeric())
+
+for (k in 1:n){
+  p <- sample(1:20, 1)                  # a random writer
+  d <- sample(0:4, 1)                   # a random digit
+  s <- sample(1:5, 2)                   # two different sessions
+  r <- sample(1:50, 2)                  # two different replicates
+  q <- sample(setdiff(1:20, p), 1)      # a different writer
+
+  a <- get_i(p, d, s[1], r[1])          # the reference image
+
+  results[nrow(results) + 1, ] <- list("Within-session", d, dist_img(a, get_i(p, d, s[1], r[2])))
+  results[nrow(results) + 1, ] <- list("Across-session", d, dist_img(a, get_i(p, d, s[2], r[2])))
+  results[nrow(results) + 1, ] <- list("Between-writer", d, dist_img(a, get_i(q, d, s[1], r[2])))
+}
+
+results$type <- factor(results$type,
+                       levels = c("Within-session", "Across-session", "Between-writer"))
+
+# Numbers
+aggregate(dist ~ type, data = results, FUN = function(v) c(mean = mean(v), sd = sd(v)))
+
+# Mean distance for each digit (rows) and pair type (columns)
+tab <- with(results, tapply(dist, list(Digit = digit, Type = type), mean))
+
+# Round, and add a column showing how much bigger across-session is than within-session
+tab <- as.data.frame(round(tab, 2))
+tab$`Across / within` <- round(tab$`Across-session` / tab$`Within-session`, 1)
+tab
+```
+
+```{r}
+#| label: task1-stats
+#| include: false
+# ADDED: statistics behind the distance comparison
+M <- matrix(results$dist, ncol = 3, byrow = TRUE,          # rows = draws; the 3 distances of a draw are matched
+            dimnames = list(NULL, c("Within", "Across", "Between")))
+dig <- results$digit[seq(1, nrow(results), by = 3)]        # digit of each draw
+
+set.seed(2026)
+B <- 2000
+boot_q <- function(v, f = mean) unname(quantile(replicate(B, f(sample(v, length(v), replace = TRUE))), c(.025, .975)))
+
+desc <- do.call(rbind, lapply(colnames(M), function(nm) {
+  v <- M[, nm]; ci <- boot_q(v)
+  data.frame(Pair = nm, n = length(v), Mean = mean(v), SD = sd(v), Median = median(v),
+             IQR = IQR(v), CI_low = ci[1], CI_high = ci[2])
+}))
+
+fr <- friedman.test(M)
+kendall_w <- unname(fr$statistic) / (nrow(M) * (ncol(M) - 1))
+
+pw <- do.call(rbind, lapply(list(c("Within", "Across"), c("Within", "Between"), c("Across", "Between")), function(p) {
+  d <- M[, p[2]] - M[, p[1]]; ci <- boot_q(d)
+  data.frame(Comparison = paste(p[2], "minus", p[1]), Mean_diff = mean(d), CI_low = ci[1], CI_high = ci[2],
+             d_z = mean(d) / sd(d),
+             p_raw = wilcox.test(M[, p[2]], M[, p[1]], paired = TRUE, exact = FALSE)$p.value)
+}))
+pw$p_Holm <- p.adjust(pw$p_raw, method = "holm")
+
+ratio_by_digit <- do.call(rbind, lapply(0:4, function(dg) {
+  ix <- which(dig == dg); w <- M[ix, "Within"]; a <- M[ix, "Across"]
+  bs <- replicate(B, { s <- sample.int(length(ix), replace = TRUE); mean(a[s]) / mean(w[s]) })
+  data.frame(Digit = dg, n = length(ix), Within = mean(w), Across = mean(a), Ratio = mean(a) / mean(w),
+             CI_low = unname(quantile(bs, .025)), CI_high = unname(quantile(bs, .975)))
+}))
+```
+
+```{r}
+#| label: tbl-t1-desc
+#| tbl-cap: "Pixel distance between two images of the same digit, by pair type (1000 matched draws). CI: 95% percentile bootstrap interval for the mean."
+d_out <- desc
+d_out$Pair <- c("Within-session", "Across-session", "Between-writer")
+knitr::kable(d_out, digits = 2, row.names = FALSE,
+             col.names = c("Pair type", "n", "Mean", "SD", "Median", "IQR", "CI low", "CI high"))
+```
+
+```{r}
+#| label: fig-t1-dist
+#| fig-cap: "Distribution of pixel distance by pair type: box plots, with the mean and its 95% bootstrap interval (red, offset to the right)."
+lev <- c(Within = "Within-session", Across = "Across-session", Between = "Between-writer")
+dist_long <- data.frame(Pair = factor(rep(names(lev), each = nrow(M)), levels = names(lev), labels = lev),
+                        dist = as.vector(M))
+desc$Pair <- factor(desc$Pair, levels = names(lev), labels = lev)
+ggplot(dist_long, aes(Pair, dist)) +
+  geom_boxplot(width = .5, outlier.size = .7, fill = "grey90", colour = "grey25") +
+  geom_pointrange(data = desc, aes(y = Mean, ymin = CI_low, ymax = CI_high),
+                  colour = okabe[["red"]], size = .4, position = position_nudge(x = .38)) +
+  labs(x = NULL, y = "Euclidean pixel distance",
+       caption = sprintf("n = %d matched draws. Friedman test: chi-squared(%d) = %.1f, p %s; Kendall's W = %.2f.",
+                         nrow(M), unname(fr$parameter), unname(fr$statistic), fp(fr$p.value), kendall_w))
+```
+
+```{r}
+#| label: tbl-t1-tests
+#| tbl-cap: "Paired comparisons of the three distances (Wilcoxon signed-rank tests, Holm-adjusted p-values). Mean difference with 95% bootstrap interval; d_z is the paired standardised effect size."
+pw_out <- data.frame(pw$Comparison, pw$Mean_diff, pw$CI_low, pw$CI_high, pw$d_z,
+                     format.pval(pw$p_raw, digits = 2, eps = 1e-16), format.pval(pw$p_Holm, digits = 2, eps = 1e-16))
+knitr::kable(pw_out, digits = 2, row.names = FALSE,
+             col.names = c("Comparison", "Mean difference", "CI low", "CI high", "d_z", "p (raw)", "p (Holm)"))
+```
+
+```{r}
+#| label: fig-t1-ratio
+#| fig-cap: "Ratio of the mean across-session distance to the mean within-session distance, by digit, with 95% bootstrap intervals. A ratio of 1 would mean that changing session adds no variation beyond that within a session."
+ggplot(ratio_by_digit, aes(factor(Digit), Ratio)) +
+  geom_hline(yintercept = 1, linetype = 3, colour = "grey40") +
+  geom_pointrange(aes(ymin = CI_low, ymax = CI_high), colour = okabe[["blue"]], size = .5) +
+  labs(x = "Digit", y = "Across-session / within-session distance",
+       caption = "Each point uses the draws for that digit (n per digit shown in the table below).")
+```
+
+```{r}
+#| label: tbl-t1-ratio
+#| tbl-cap: "Mean within- and across-session distances and their ratio, by digit."
+knitr::kable(ratio_by_digit, digits = 2, row.names = FALSE,
+             col.names = c("Digit", "n draws", "Within", "Across", "Ratio", "CI low", "CI high"))
+```
+
+## What Task 1 tells us
+
+Two images of the same digit by the same writer in the same session were very close (mean distance 2.72, SD 0.50), which fits the 50 replicates being near copies of one another. Moving to a different session of the same writer more than doubled the distance (7.15, SD 1.63), and a different writer's image was further again (8.59, SD 1.14) (@tbl-t1-desc, @fig-t1-dist). The three distances differ clearly in the matched draws (Friedman chi-squared = `r f2(unname(fr$statistic), 1)` on `r unname(fr$parameter)` df, p `r fp(fr$p.value)`; Kendall's W = `r f2(kendall_w)`), and all three Holm-adjusted pairwise tests give p < 1e-16 (@tbl-t1-tests). With 1 000 draws almost any difference would be significant, so the effect sizes are the more useful numbers. The across-session minus within-session gap is 4.43 (95% CI 4.33 to 4.53; d~z~ = 2.72), where d~z~ is the mean paired difference divided by the standard deviation of the differences [@lakens2013]. The between-writer minus across-session gap is only 1.44 (95% CI 1.33 to 1.56; d~z~ = 0.77).
+
+The practical point is that a change of session moves a writer's digit about three quarters (76%) of the way to where a different writer's digit sits ((7.15 - 2.72) / (8.59 - 2.72)). The writer is therefore only partly recognisable from the pixels of a single image, and any model has to cope with the same person looking different from session to session. The ratio of across-session to within-session distance was above 1 for every digit and its confidence interval never came near 1 (@fig-t1-ratio, @tbl-t1-ratio). It was highest for digit 1 (3.40; within-session distance 2.01) and lowest for digit 4 (2.36). The digit 1 is a thin stroke, so a small shift in position or slant changes which pixels are lit, and that is a plausible reason for its larger ratio, although we did not test it.
+
+This has two consequences for the next tasks. First, a random split would put near-copies of the same image in both the training and the test set, so it would measure memory more than generalisation, and we therefore split by session in Task 2 and by writer in Task 3. Second, these are raw pixel distances between single pairs, so they describe the data and do not by themselves show how well a model can separate writers.
+
+
+# Task 2: CNN that predicts the writer {#sec-task2}
+
+Task 2 treats writer identification as a 20-class classification problem: the input is an image and the output is the writer's ID. All 20 writers appear in the training data, so this is identification of known writers, not verification of unknown ones.
+
+**Split.** We split by session: sessions 1 to 3 for training (15 000 images), session 4 for validation and session 5 for testing (5 000 images each). This asks whether a model trained on a person's earlier writing recognises them in a later session, and it stops near-identical replicates (@sec-task1) from straddling the training and test sets. Random splitting of records that share a source is known to give optimistic results: random cross-validation on structured data underestimates predictive error because the dependence between records is ignored [@roberts2017], and @saeb2017 make the same case for subject-wise versus record-wise validation. As a check, we also trained the same model on a random split (15 000 images for training, 5 000 for validation).
+
+**Model.** The CNN has two convolution and max-pooling blocks (32 and then 64 filters of size 3 × 3, following the convolution–pooling design of @lecun1998) with rectified linear activations [@nair2010], a flatten layer, a dense layer of 64 units with 30% dropout, which randomly removes units during training to reduce overfitting [@srivastava2014], and a softmax output of 20 units. We trained with sparse categorical cross-entropy and the Adam optimiser [@kingma2015] for 10 epochs with batches of 128.
+
+**What the measures capture.** Accuracy is the proportion of images assigned to the right writer. In practice it answers: of the pages we receive from known writers in a new session, how many do we attribute to the right person? Chance is 1/20 = 5%, because the 20 writers are equally represented. The confusion matrix shows which writers are mistaken for which, that is, whose handwriting looks alike to the model. Accuracy by digit asks how much writer information a single digit carries, which matters when an examiner only has one kind of character to work with.
+
+**Uncertainty.** The 50 replicates within a writer, digit and session are near copies, so images are not independent and a binomial interval treats the test set as holding more information than it does. We report the exact Clopper–Pearson interval [@clopper1934] for reference, but base our uncertainty on a cluster bootstrap. Whole writer–digit groups (100 in the test session, 20 per digit) are resampled with replacement and the accuracy is recomputed 2000 times [@efron1979; @field2007]. Differences between digits are tested with a Friedman test over writers [@friedman1937], using each writer's accuracy on each digit as the unit.
+
+```{r}
+#| label: task2-split
+# (Task 2 code as written by the group; data is already loaded above.)
+set.seed(1); set_random_seed(1)   # ADDED: makes the training reproducible
+
+x <- data$images / 255
+y_person <- data$metadata$person_id - 1L
+
+# Splitting data by session. Session 1-3 for training, session 4 for validation and session 5 for testing
+
+# Picking rows by session
+meta <- data$metadata # this is the table with one row per image
+
+train_rows <- which(meta$session %in% 1:3) # row numbers of session 1-3
+
+val_rows <- which(meta$session == 4)
+test_rows <- which(meta$session == 5)
+
+# images and labels
+x_train <- x[train_rows, , , , drop = FALSE]
+y_train <- y_person[train_rows]
+
+x_val <- x[val_rows, , , , drop = FALSE]
+y_val <- y_person[val_rows]
+
+x_test <- x[test_rows, , , , drop = FALSE]
+y_test <- y_person[test_rows]
+
+# Checking if the split worked
+dim(x_train); dim(x_val); dim(x_test)
+table(y_train)
+```
+
+```{r}
+#| label: task2-cnn
+# CNN Model building
+model <- keras_model_sequential(input_shape = c(28, 28, 1)) |>
+  layer_conv_2d(filters = 32, kernel_size = 3, activation = "relu") |> #keeps positive signals only
+  layer_max_pooling_2d(pool_size = 2) |>       #shrinks the image by half
+  layer_conv_2d(filters = 64, kernel_size = 3, activation = "relu") |>
+  layer_max_pooling_2d(pool_size = 2) |>
+  layer_flatten() |>
+  layer_dense(units = 64, activation = "relu") |>
+  layer_dropout(rate = 0.3) |>
+  layer_dense(units = 20, activation = "softmax")
+
+# Compiling and training
+model |> compile(
+  loss = "sparse_categorical_crossentropy",
+  optimizer = "adam",
+  metrics = "accuracy"
+)
+
+history <- model |> fit(
+  x_train, y_train,
+  epochs = 10,
+  batch_size = 128,
+  validation_data = list(x_val, y_val),
+  verbose = 2   # ADDED: one line per epoch keeps the rendered report tidy
+)
+```
+
+```{r}
+#| label: task2-leakage
+# Checking for leakage using random split
+set.seed(123)
+idx <- sample(nrow(x))
+rand_train <- idx[1:15000]
+rand_val   <- idx[15001:20000]
+
+x_tr_rand <- x[rand_train, , , , drop = FALSE]
+y_tr_rand <- y_person[rand_train]
+x_va_rand <- x[rand_val, , , , drop = FALSE]
+y_va_rand <- y_person[rand_val]
+
+model_rand <- keras_model_sequential(input_shape = c(28, 28, 1)) |>
+  layer_conv_2d(filters = 32, kernel_size = 3, activation = "relu") |>
+  layer_max_pooling_2d(pool_size = 2) |>
+  layer_conv_2d(filters = 64, kernel_size = 3, activation = "relu") |>
+  layer_max_pooling_2d(pool_size = 2) |>
+  layer_flatten() |>
+  layer_dense(units = 64, activation = "relu") |>
+  layer_dropout(rate = 0.3) |>
+  layer_dense(units = 20, activation = "softmax")
+
+model_rand |> compile(
+  loss = "sparse_categorical_crossentropy",
+  optimizer = "adam",
+  metrics = "accuracy"
+)
+
+# FIX: the original used x_tr_r / y_tr_r / x_va_r / y_va_r, which do not exist.
+# The objects defined above are x_tr_rand / y_tr_rand / x_va_rand / y_va_rand.
+history_rand <- model_rand |> fit(
+  x_tr_rand, y_tr_rand,
+  epochs = 10,
+  batch_size = 128,
+  validation_data = list(x_va_rand, y_va_rand),
+  verbose = 2
+)
+```
+
+```{r}
+#| label: task2-evaluate
+# Accuracy by digit
+pred  <- model |> predict(x_val, verbose = 0)
+pred_class <- max.col(pred) - 1L
+meta_val  <- meta[val_rows, ]
+
+acc_by_digit <- tapply(pred_class == y_val, meta_val$digit, mean)
+acc_by_digit
+
+# Evaluating the model
+# test accuracy
+model |> evaluate(x_test, y_test, verbose = 0)
+
+# Accuracy by digit on test set
+pred_test <- model |> predict(x_test, verbose = 0)
+pred_class_test <- max.col(pred_test) - 1L
+meta_test <- meta[test_rows, ]
+
+acc_by_digit_test <- tapply(pred_class_test == y_test, meta_test$digit, mean)
+acc_by_digit_test
+```
+
+```{r}
+#| label: task2-stats
+#| include: false
+# ADDED: statistics behind the CNN results
+set.seed(2026)
+B <- 2000
+correct <- pred_class_test == y_test
+
+# Cluster bootstrap: resample whole clusters (e.g. writer x digit groups) with replacement
+boot_cluster <- function(correct, cluster, B = 2000) {
+  k_c <- tapply(correct, cluster, sum); n_c <- tapply(correct, cluster, length); K <- length(k_c)
+  bs <- replicate(B, { i <- sample.int(K, K, replace = TRUE); sum(k_c[i]) / sum(n_c[i]) })
+  unname(quantile(bs, c(.025, .975)))
+}
+
+n_test <- length(correct); k_test <- sum(correct)
+cp_all   <- binom.test(k_test, n_test)$conf.int
+boot_all <- boot_cluster(correct, paste(meta_test$person_id, meta_test$digit))
+
+last <- function(v) v[length(v)]
+acc_summary <- data.frame(
+  Split = c(rep("Session split", 3), rep("Random split", 2)),
+  Evaluated_on = c("Training (sessions 1-3), last epoch", "Validation (session 4)", "Test (session 5)",
+                   "Training (random), last epoch", "Validation (random)"),
+  n = c(length(train_rows), length(val_rows), n_test, length(rand_train), length(rand_val)),
+  Accuracy = c(last(history$metrics$accuracy), last(history$metrics$val_accuracy), k_test / n_test,
+               last(history_rand$metrics$accuracy), last(history_rand$metrics$val_accuracy)),
+  CP_low = c(NA, NA, cp_all[1], NA, NA), CP_high = c(NA, NA, cp_all[2], NA, NA),
+  Boot_low = c(NA, NA, boot_all[1], NA, NA), Boot_high = c(NA, NA, boot_all[2], NA, NA))
+
+# Accuracy by digit (clusters = writers within a digit)
+digit_stats <- do.call(rbind, lapply(0:4, function(dg) {
+  ix <- meta_test$digit == dg; cr <- correct[ix]
+  cp <- binom.test(sum(cr), length(cr))$conf.int
+  bc <- boot_cluster(cr, meta_test$person_id[ix])
+  data.frame(Digit = dg, n = length(cr), Accuracy = mean(cr), CP_low = cp[1], CP_high = cp[2],
+             Boot_low = bc[1], Boot_high = bc[2])
+}))
+
+# Do digits differ? Friedman test with writers as blocks
+cl <- aggregate(correct ~ person + digit,
+                data = data.frame(correct = correct, person = meta_test$person_id, digit = meta_test$digit),
+                FUN = mean)
+acc_mat <- with(cl, tapply(correct, list(person, digit), mean))
+fr2 <- friedman.test(acc_mat)
+w2 <- unname(fr2$statistic) / (nrow(acc_mat) * (ncol(acc_mat) - 1))
+
+# Accuracy by writer
+writer_acc <- data.frame(Writer = as.integer(names(tapply(correct, meta_test$person_id, mean))),
+                         Accuracy = as.numeric(tapply(correct, meta_test$person_id, mean)))
+
+# Confusion matrix (rows = true writer, normalised by row)
+cm <- table(truth = factor(y_test, levels = 0:19), predicted = factor(pred_class_test, levels = 0:19))
+cm_df <- as.data.frame(cm)
+cm_df$prop <- cm_df$Freq / ave(cm_df$Freq, cm_df$truth, FUN = sum)
+cm_df$truth <- factor(as.integer(as.character(cm_df$truth)) + 1L, levels = 1:20)
+cm_df$predicted <- factor(as.integer(as.character(cm_df$predicted)) + 1L, levels = 1:20)
+off <- unclass(cm); diag(off) <- 0
+top <- head(order(off, decreasing = TRUE), 5)
+top_conf <- data.frame(True_writer = row(off)[top] , Predicted_as = col(off)[top], Images = off[top],
+                       Share_of_true_writers_images = off[top] / rowSums(unclass(cm))[row(off)[top]])
+```
+
+## Results
+
+```{r}
+#| label: fig-t2-curves
+#| fig-cap: "Training and validation accuracy and loss by epoch for the session split and the random split. The dotted line is the chance accuracy of 5%. Training metrics are running averages over each epoch with dropout active."
+#| fig-height: 5
+hist_df <- function(h, label) {
+  m <- h$metrics
+  data.frame(epoch = rep(seq_along(m$loss), 2), split = label,
+             set = rep(c("Training", "Validation"), each = length(m$loss)),
+             accuracy = c(m$accuracy, m$val_accuracy), loss = c(m$loss, m$val_loss))
+}
+curves <- rbind(hist_df(history, "Session split"), hist_df(history_rand, "Random split"))
+curves$split <- factor(curves$split, levels = c("Session split", "Random split"))
+curves_long <- rbind(
+  data.frame(curves[c("epoch", "split", "set")], metric = "Accuracy", value = curves$accuracy),
+  data.frame(curves[c("epoch", "split", "set")], metric = "Loss", value = curves$loss))
+ggplot(curves_long, aes(epoch, value, colour = set)) +
+  geom_hline(data = data.frame(metric = "Accuracy", y = 0.05), aes(yintercept = y), linetype = 3, colour = "grey40") +
+  geom_line(linewidth = .8) + geom_point(size = 1.5) +
+  facet_grid(metric ~ split, scales = "free_y") +
+  scale_colour_manual(values = c(Training = okabe[["blue"]], Validation = okabe[["red"]]), name = NULL) +
+  scale_x_continuous(breaks = seq(2, 10, 2)) +
+  labs(x = "Epoch", y = NULL)
+```
+
+```{r}
+#| label: tbl-t2-summary
+#| tbl-cap: "Writer-identification accuracy under the two splits. For the test set: exact Clopper-Pearson (CP) interval and 95% cluster-bootstrap interval (100 writer-digit clusters). Chance accuracy is 0.05."
+knitr::kable(acc_summary, digits = 3, row.names = FALSE,
+             col.names = c("Split", "Evaluated on", "n", "Accuracy", "CP low", "CP high", "Boot low", "Boot high"))
+```
+
+```{r}
+#| label: fig-t2-digit
+#| fig-cap: "Test accuracy by digit. Thick blue line: 95% cluster-bootstrap interval (clusters = writers); thin grey line: exact Clopper-Pearson interval. Dotted line: chance (5%); dashed line: overall test accuracy."
+ggplot(digit_stats, aes(factor(Digit), Accuracy)) +
+  geom_hline(yintercept = .05, linetype = 3, colour = "grey40") +
+  geom_hline(yintercept = k_test / n_test, linetype = 2, colour = okabe[["red"]]) +
+  geom_linerange(aes(ymin = CP_low, ymax = CP_high), colour = "grey60", linewidth = .6) +
+  geom_linerange(aes(ymin = Boot_low, ymax = Boot_high), colour = okabe[["blue"]], linewidth = 1.8) +
+  geom_point(size = 2.8, colour = okabe[["blue"]]) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  labs(x = "Digit", y = "Test accuracy",
+       caption = sprintf("n = %d images per digit. Friedman test across digits (writers as blocks): chi-squared(%d) = %.2f, p %s; Kendall's W = %.2f.",
+                         digit_stats$n[1], unname(fr2$parameter), unname(fr2$statistic), fp(fr2$p.value), w2))
+```
+
+```{r}
+#| label: tbl-t2-digit
+#| tbl-cap: "Test accuracy by digit with exact Clopper-Pearson (CP) and cluster-bootstrap intervals."
+knitr::kable(digit_stats, digits = 3, row.names = FALSE,
+             col.names = c("Digit", "n", "Accuracy", "CP low", "CP high", "Boot low", "Boot high"))
+```
+
+```{r}
+#| label: fig-t2-writer
+#| fig-cap: "Test accuracy for each writer (50 images for each of 5 digits). Dotted line: chance (5%); dashed line: overall test accuracy."
+ggplot(writer_acc, aes(factor(Writer), Accuracy)) +
+  geom_col(fill = "grey60", width = .75) +
+  geom_hline(yintercept = .05, linetype = 3, colour = "grey40") +
+  geom_hline(yintercept = k_test / n_test, linetype = 2, colour = okabe[["red"]]) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  labs(x = "Writer", y = "Test accuracy")
+```
+
+```{r}
+#| label: fig-t2-confusion
+#| fig-cap: "Confusion matrix on the test session. Each row is a true writer and shows the share of that writer's images assigned to each predicted writer; cells with 20% or more are labelled with the percentage."
+#| fig-height: 5.6
+ggplot(cm_df, aes(predicted, truth, fill = prop)) +
+  geom_tile(colour = "white", linewidth = .25) +
+  geom_text(data = subset(cm_df, prop >= .2), aes(label = round(100 * prop)), size = 2.3, colour = "grey10") +
+  scale_fill_gradient(low = "white", high = okabe[["blue"]], limits = c(0, 1), labels = scales::percent, name = "Row share") +
+  scale_y_discrete(limits = rev) +
+  coord_fixed() +
+  guides(fill = guide_colourbar(title.position = "top")) +
+  theme(legend.key.width = unit(1.6, "cm")) +
+  labs(x = "Predicted writer", y = "True writer")
+```
+
+```{r}
+#| label: tbl-t2-confusions
+#| tbl-cap: "The five most frequent single confusions on the test session."
+knitr::kable(top_conf, digits = 3, row.names = FALSE,
+             col.names = c("True writer", "Predicted as", "Images", "Share of true writer's images"))
+```
+
+## What Task 2 tells us
+
+The CNN fitted the training sessions almost perfectly (98.7% accuracy after 10 epochs) but identified the writer correctly in only 59.3% of the test images from the unseen session 5 (@tbl-t2-summary). The exact Clopper-Pearson interval is 57.9% to 60.7%, but this treats the 5 000 images as independent, which they are not. The cluster bootstrap, which resamples whole writer-digit groups, gives a much wider interval of 50.3% to 67.8% [@field2007], so the honest statement is that test accuracy is roughly 50% to 68%. Either way it is far above the 5% expected by chance, and far below the training accuracy. The learning curves show where the gap comes from (@fig-t2-curves). Validation accuracy stays between about 46% and 55% from the first epoch, while the validation loss rises from 1.79 to 4.44 as the training loss falls. The network is becoming more confident without becoming more correct on a new session, which is what overfitting looks like. We did not use early stopping here, so the test result is for the model after 10 epochs.
+
+The random split is the contrast that matters. The same network reached 99.5% validation accuracy within ten epochs when the images were shuffled across training and validation. That near-perfect score is not evidence of a better model. It is the leakage that Task 1 predicted, because the validation images have near-copies in the training set (the within-session distance was only 2.72). The gap of about 40 points between the random split (99.5%) and the session-split test (59.3%) shows how much a random split would have overstated performance [@roberts2017; @saeb2017].
+
+Accuracy was similar across digits (55.5% to 69.6%), with digit 3 highest at 69.6%. The cluster-bootstrap intervals for the five digits overlap almost completely (@fig-t2-digit, @tbl-t2-digit), and a Friedman test across digits with writers as blocks gives chi-squared = `r f2(unname(fr2$statistic), 2)` on `r unname(fr2$parameter)` df, p `r fp(fr2$p.value)` (Kendall's W = `r f2(w2)`). The data therefore give little support for saying that some digits identify writers better than others, and the digit 3 result should be treated as a hint at most.
+
+The errors are concentrated in particular writers more than in particular digits (@fig-t2-writer, @fig-t2-confusion). The clearest case is writer 10: 240 of that writer's 250 test images (96%) were assigned to writer 2 (@tbl-t2-confusions). Writer 5 was mistaken for writer 13 in 72% of cases, and writer 13 for writer 5 in 40%, so those two seem to write alike in session 5. The confusion matrix shows that this happens but not why, so we report it as an observation only.
+
+
+# Task 3: Siamese network (same writer or not?) {#sec-task3}
+
+Task 3 changes the question. Instead of naming the writer, the network judges whether two images were written by the same person, so it can be applied to writers it has never seen (verification instead of identification). We use a Siamese network [@bromley1993]: one encoder turns each image into a 16-number embedding, the same encoder (with shared weights) is applied to both images in a pair, and the model outputs the Euclidean distance between the two embeddings. The encoder has two convolution and max-pooling stages (16 and 32 filters), global average pooling and a dense layer of 16 units.
+
+**Training examples.** Positive pairs show the same writer and negative pairs show different writers, in roughly equal numbers. Both images in a pair show the same digit; otherwise the network could answer "different writer" whenever the digits differ, instead of comparing handwriting. We split by writer before building pairs: writers 1 to 14 for training (8 000 pairs), 15 to 17 for validation (2 000 pairs) and 18 to 20 for testing (2 000 pairs). Pairs are built only inside one part, so no image or writer appears in more than one part. Because the aim is to compare people, testing on unseen writers is the appropriate kind of generalisation.
+
+**Loss.** We use the contrastive loss of @hadsell2006. With $D$ the distance between the two embeddings, $y = 1$ for a same-writer pair and $m = 1$ the margin,
+
+$$L = y\,D^{2} + (1 - y)\,\max(0,\; m - D)^{2}.$$
+
+Same-writer pairs are pulled together, and different-writer pairs are pushed apart only while they are closer than the margin. @hadsell2006 write the same loss with the labels reversed (0 for similar pairs) and a factor of 1/2; we follow the convention of the course slides. We optimised with Adam and early stopping on the validation loss, keeping the best weights.
+
+**Evaluation.** The network outputs a distance, so a decision rule is needed: a pair is called "same writer" if its distance is below a threshold. We chose the threshold on the validation pairs to maximise balanced accuracy, the mean of the true match rate and the true non-match rate [@brodersen2010], and then fixed it for the test pairs. Because one threshold is one operating point, we also report the ROC curve, which plots the true match rate against the false match rate over all thresholds [@fawcett2006], and the area under it (AUC), which is the probability that a randomly chosen same-writer pair has a smaller distance than a randomly chosen different-writer pair [@hanley1982]. Intervals are percentile bootstrap intervals over test pairs [@efron1979] and exact Clopper–Pearson intervals for rates [@clopper1934]. These intervals reflect the sampling of pairs only. The pairs reuse a small set of images from three writers, so we also report results for each test writer separately.
+
+## Pair construction
+
+```{r}
+#| label: task3-pairs
+set.seed(1); set_random_seed(1)
+
+# 1. Split by WRITER first, so validation/test writers are never seen in training
+tr_ids <- which(meta$person_id %in% 1:14)
+va_ids <- which(meta$person_id %in% 15:17)
+te_ids <- which(meta$person_id %in% 18:20)
+
+# 2. Build pairs INSIDE one part. About half are same-writer (label 1), half
+#    different-writer (label 0). Both images in a pair show the SAME digit, so
+#    the model has to compare handwriting, not digit shape.
+make_pairs <- function(ids, n){
+  a <- sample(ids, n, replace = TRUE)
+  same <- runif(n) < 0.5
+  b <- integer(n)
+  for (k in seq_len(n)){
+    i <- a[k]
+    pool <- ids[meta$digit[ids] == meta$digit[i]]
+    pool <- if (same[k]) pool[meta$person_id[pool] == meta$person_id[i]]
+            else         pool[meta$person_id[pool] != meta$person_id[i]]
+    pool <- setdiff(pool, i)
+    b[k] <- pool[sample.int(length(pool), 1)]
+  }
+  cbind(a, b)
+}
+make_batch <- function(p) list(
+  left  = x[p[, 1], , , , drop = FALSE],
+  right = x[p[, 2], , , , drop = FALSE],
+  y     = matrix(as.numeric(meta$person_id[p[, 1]] == meta$person_id[p[, 2]]), ncol = 1))
+
+tr_pairs <- make_pairs(tr_ids, 8000)
+va_pairs <- make_pairs(va_ids, 2000)
+te_pairs <- make_pairs(te_ids, 2000)   # keep the indices so test pairs can be analysed later
+train <- make_batch(tr_pairs)
+valid <- make_batch(va_pairs)
+test  <- make_batch(te_pairs)
+```
+
+```{r}
+#| label: tbl-t3-pairs
+#| tbl-cap: "Composition of the pair sets. Images are never shared between sets because the split is by writer."
+pair_sets <- list(Training = tr_pairs, Validation = va_pairs, Test = te_pairs)
+comp <- data.frame(
+  Set = names(pair_sets),
+  Writers = c("1-14", "15-17", "18-20"),
+  Pairs = sapply(pair_sets, nrow),
+  Same_writer_share = sapply(pair_sets, function(p) mean(meta$person_id[p[, 1]] == meta$person_id[p[, 2]])),
+  Same_digit_in_pair = sapply(pair_sets, function(p) all(meta$digit[p[, 1]] == meta$digit[p[, 2]])),
+  Distinct_images = sapply(pair_sets, function(p) length(unique(c(p)))))
+knitr::kable(comp, digits = 3, row.names = FALSE,
+             col.names = c("Set", "Writers", "Pairs", "Share same-writer", "Same digit in every pair", "Distinct images"))
+```
+
+## Shared encoder and Siamese model
+
+```{r}
+#| label: task3-model
+# 3. Shared encoder: the same layers (same weights) are used for both images
+img_in <- layer_input(shape = c(28, 28, 1))
+z <- img_in |>
+  layer_conv_2d(16, 3, activation = "relu") |>
+  layer_max_pooling_2d(2) |>
+  layer_conv_2d(32, 3, activation = "relu") |>
+  layer_global_average_pooling_2d() |>
+  layer_dense(16)
+encoder <- keras_model(img_in, z)
+
+# 4. Siamese model: output = Euclidean distance between the two embeddings
+left_in  <- layer_input(shape = c(28, 28, 1))
+right_in <- layer_input(shape = c(28, 28, 1))
+distance <- list(encoder(left_in), encoder(right_in)) |>
+  layer_lambda(f = function(z) {
+    op_sqrt(op_sum(op_square(z[[1]] - z[[2]]), axis = 2, keepdims = TRUE) + 1e-7)
+  })
+siamese <- keras_model(list(left_in, right_in), distance)
+
+# 5. Contrastive loss with margin 1:
+#    same pairs (y = 1) are pulled together (loss D^2);
+#    different pairs (y = 0) are pushed apart until D >= 1, then left alone.
+contrastive_loss <- function(y, d) {
+  op_mean(y * op_square(d) + (1 - y) * op_square(op_maximum(1 - d, 0)))
+}
+siamese |> compile(optimizer = optimizer_adam(1e-3), loss = contrastive_loss)
+
+history_siam <- siamese |> fit(
+  list(train$left, train$right), train$y,
+  validation_data = list(list(valid$left, valid$right), valid$y),
+  epochs = 12, batch_size = 64, verbose = 2,
+  # ADDED: stop when validation loss stops improving and keep the best weights
+  callbacks = list(callback_early_stopping(monitor = "val_loss", patience = 2,
+                                           restore_best_weights = TRUE))
+)
+```
+
+## Threshold, test performance and breakdowns
+
+```{r}
+#| label: task3-eval
+# 6. Choose the distance threshold on VALIDATION pairs (not on test)
+valid_distance <- as.numeric(predict(siamese, list(valid$left, valid$right), verbose = 0))
+valid_same <- valid$y[, 1] == 1
+
+# balanced accuracy = average of (true match rate) and (true non-match rate)
+bal_acc <- function(d, same, cut){
+  pred_same <- d < cut
+  (mean(pred_same[same]) + mean(!pred_same[!same])) / 2
+}
+# AUC = P(a same-writer pair has a smaller distance than a different-writer pair)
+auc_dist <- function(d, same){
+  r <- rank(d); n1 <- sum(same); n0 <- sum(!same)
+  1 - (sum(r[same]) - n1 * (n1 + 1) / 2) / (n1 * n0)
+}
+
+cuts <- seq(min(valid_distance), max(valid_distance), length.out = 200)
+scores <- sapply(cuts, function(cc) bal_acc(valid_distance, valid_same, cc))
+threshold <- cuts[which.max(scores)]
+c(threshold = threshold, validation_balanced_accuracy = max(scores))
+
+# 7. Evaluate once on TEST pairs (new writers), threshold fixed from validation
+test_distance <- as.numeric(predict(siamese, list(test$left, test$right), verbose = 0))
+test_same <- test$y[, 1] == 1
+pred_same <- test_distance < threshold
+
+c(test_balanced_accuracy = bal_acc(test_distance, test_same, threshold),
+  true_match_rate        = mean(pred_same[test_same]),
+  true_non_match_rate    = mean(!pred_same[!test_same]))
+
+table(truth = test_same, predicted = pred_same)
+```
+
+```{r}
+#| label: task3-stats
+#| include: false
+# ADDED: statistics behind the Siamese results
+set.seed(2026)
+B <- 1000
+n_pairs <- length(test_same)
+
+bal_hat <- bal_acc(test_distance, test_same, threshold)
+auc_hat <- auc_dist(test_distance, test_same)
+boot_t3 <- t(replicate(B, {
+  i <- sample.int(n_pairs, replace = TRUE)
+  c(bal = bal_acc(test_distance[i], test_same[i], threshold), auc = auc_dist(test_distance[i], test_same[i]))
+}))
+tmr_k <- sum(pred_same[test_same]);   tmr_n <- sum(test_same)
+tnr_k <- sum(!pred_same[!test_same]); tnr_n <- sum(!test_same)
+cp1 <- binom.test(tmr_k, tmr_n)$conf.int; cp0 <- binom.test(tnr_k, tnr_n)$conf.int
+t3_metrics <- data.frame(
+  Measure = c("Balanced accuracy", "True match rate (same writer accepted)",
+              "True non-match rate (different writer rejected)", "AUC"),
+  Estimate = c(bal_hat, tmr_k / tmr_n, tnr_k / tnr_n, auc_hat),
+  CI_low  = c(quantile(boot_t3[, "bal"], .025), cp1[1], cp0[1], quantile(boot_t3[, "auc"], .025)),
+  CI_high = c(quantile(boot_t3[, "bal"], .975), cp1[2], cp0[2], quantile(boot_t3[, "auc"], .975)),
+  Interval = c("Bootstrap", "Clopper-Pearson", "Clopper-Pearson", "Bootstrap"))
+
+# confusion counts
+t3_conf <- data.frame(
+  Truth = c("Same writer", "Different writers"),
+  Accepted_as_same = c(tmr_k, tnr_n - tnr_k), Rejected_as_different = c(tmr_n - tmr_k, tnr_k))
+
+# ROC curve
+roc_cuts <- c(-Inf, sort(unique(test_distance)), Inf)
+roc <- data.frame(fpr = sapply(roc_cuts, function(cc) mean(test_distance[!test_same] < cc)),
+                  tpr = sapply(roc_cuts, function(cc) mean(test_distance[test_same]  < cc)))
+
+# Same-session versus different-session pairs
+same_session <- meta$session[te_pairs[, 1]] == meta$session[te_pairs[, 2]]
+cond <- function(cls_same, sess_same) {
+  ix <- test_same == cls_same & same_session == sess_same
+  k <- if (cls_same) sum(pred_same[ix]) else sum(!pred_same[ix])
+  cp <- if (sum(ix) > 0) binom.test(k, sum(ix))$conf.int else c(NA, NA)
+  data.frame(Pair_class = if (cls_same) "Same writer" else "Different writers",
+             Sessions = if (sess_same) "Same session" else "Different sessions",
+             n = sum(ix), Correct = k, Rate = if (sum(ix) > 0) k / sum(ix) else NA, CI_low = cp[1], CI_high = cp[2])
+}
+sess_tab <- rbind(cond(TRUE, TRUE), cond(TRUE, FALSE), cond(FALSE, TRUE), cond(FALSE, FALSE))
+fisher_p <- function(cls_same) {
+  a <- sess_tab[sess_tab$Pair_class == if (cls_same) "Same writer" else "Different writers", ]
+  if (any(a$n == 0)) return(NA_real_)
+  fisher.test(matrix(c(a$Correct[1], a$n[1] - a$Correct[1], a$Correct[2], a$n[2] - a$Correct[2]), 2))$p.value
+}
+p_same_writer_sessions <- fisher_p(TRUE); p_diff_writer_sessions <- fisher_p(FALSE)
+
+# By anchor writer (writer of the first image in each test pair)
+anchor <- meta$person_id[te_pairs[, 1]]
+by_writer <- do.call(rbind, lapply(sort(unique(anchor)), function(w) {
+  ix <- anchor == w
+  tmr <- mean(pred_same[ix & test_same]); tnr <- mean(!pred_same[ix & !test_same])
+  data.frame(Writer = w, Pairs = sum(ix), Same_pairs = sum(ix & test_same),
+             TMR = tmr, TNR = tnr, Bal_acc = (tmr + tnr) / 2, AUC = auc_dist(test_distance[ix], test_same[ix]))
+}))
+
+# By digit (the digit is the same in both images)
+pair_digit <- meta$digit[te_pairs[, 1]]
+by_digit <- do.call(rbind, lapply(0:4, function(dg) {
+  ix <- which(pair_digit == dg)
+  bs <- replicate(500, { i <- sample(ix, replace = TRUE); bal_acc(test_distance[i], test_same[i], threshold) })
+  data.frame(Digit = dg, Pairs = length(ix), Bal_acc = bal_acc(test_distance[ix], test_same[ix], threshold),
+             CI_low = unname(quantile(bs, .025)), CI_high = unname(quantile(bs, .975)))
+}))
+```
+
+```{r}
+#| label: fig-t3-loss
+#| fig-cap: "Contrastive loss by epoch for the training and validation pairs. Early stopping restores the weights from the epoch with the lowest validation loss (dashed line)."
+h3 <- data.frame(epoch = rep(seq_along(history_siam$metrics$loss), 2),
+                 set = rep(c("Training", "Validation"), each = length(history_siam$metrics$loss)),
+                 loss = c(history_siam$metrics$loss, history_siam$metrics$val_loss))
+ggplot(h3, aes(epoch, loss, colour = set)) +
+  geom_vline(xintercept = which.min(history_siam$metrics$val_loss), linetype = 2, colour = "grey50") +
+  geom_line(linewidth = .8) + geom_point(size = 1.5) +
+  scale_colour_manual(values = c(Training = okabe[["blue"]], Validation = okabe[["red"]]), name = NULL) +
+  labs(x = "Epoch", y = "Contrastive loss")
+```
+
+```{r}
+#| label: fig-t3-threshold
+#| fig-cap: "Choosing the threshold: balanced accuracy on the validation pairs for each candidate distance threshold. The dashed line marks the chosen threshold."
+ggplot(data.frame(cut = cuts, score = scores), aes(cut, score)) +
+  geom_line(linewidth = .8, colour = okabe[["blue"]]) +
+  geom_vline(xintercept = threshold, linetype = 2, colour = okabe[["red"]]) +
+  annotate("text", x = threshold, y = min(scores), label = sprintf(" threshold = %.2f", threshold),
+           hjust = 0, vjust = 0, size = 3.2, colour = okabe[["red"]]) +
+  labs(x = "Distance threshold", y = "Validation balanced accuracy")
+```
+
+```{r}
+#| label: fig-t3-dist
+#| fig-cap: "Distribution of the embedding distance for the 2 000 test pairs (unseen writers), by true pair type. The dashed line is the threshold chosen on the validation pairs."
+ggplot(data.frame(d = test_distance, Pair = ifelse(test_same, "Same writer", "Different writers")),
+       aes(d, fill = Pair, colour = Pair)) +
+  geom_density(alpha = .35, linewidth = .6) +
+  geom_vline(xintercept = threshold, linetype = 2, colour = "grey25") +
+  scale_fill_manual(values = c("Same writer" = okabe[["blue"]], "Different writers" = okabe[["orange"]]), name = NULL) +
+  scale_colour_manual(values = c("Same writer" = okabe[["blue"]], "Different writers" = okabe[["orange"]]), name = NULL) +
+  labs(x = "Distance between embeddings", y = "Density")
+```
+
+```{r}
+#| label: fig-t3-roc
+#| fig-cap: "ROC curve for the test pairs. The orange point is the operating point at the chosen threshold; the dotted diagonal is chance."
+#| fig-height: 4.6
+ggplot(roc, aes(fpr, tpr)) +
+  geom_abline(linetype = 3, colour = "grey50") +
+  geom_path(linewidth = .9, colour = okabe[["blue"]]) +
+  geom_point(data = data.frame(fpr = 1 - tnr_k / tnr_n, tpr = tmr_k / tmr_n), size = 3, colour = okabe[["red"]]) +
+  annotate("text", x = .98, y = .06, hjust = 1, size = 3.4,
+           label = sprintf("AUC = %.3f\n95%% CI %.3f to %.3f", auc_hat,
+                           quantile(boot_t3[, "auc"], .025), quantile(boot_t3[, "auc"], .975))) +
+  coord_equal() +
+  labs(x = "False match rate (different writers accepted)", y = "True match rate (same writer accepted)")
+```
+
+```{r}
+#| label: tbl-t3-metrics
+#| tbl-cap: "Test performance of the Siamese network at the validation-chosen threshold. Bootstrap intervals resample test pairs; Clopper-Pearson intervals are exact binomial intervals. Both treat pairs as independent."
+knitr::kable(t3_metrics, digits = 3, row.names = FALSE,
+             col.names = c("Measure", "Estimate", "CI low", "CI high", "Interval type"))
+```
+
+```{r}
+#| label: tbl-t3-confusion
+#| tbl-cap: "Test decisions at the chosen threshold."
+knitr::kable(t3_conf, row.names = FALSE, col.names = c("True pair type", "Accepted as same writer", "Rejected as different"))
+```
+
+```{r}
+#| label: tbl-t3-session
+#| tbl-cap: "Correct decisions by true pair type and whether the two images come from the same session, with exact 95% Clopper-Pearson intervals."
+sess_out <- sess_tab
+knitr::kable(sess_out, digits = 3, row.names = FALSE,
+             col.names = c("True pair type", "Sessions", "n pairs", "Correct", "Rate", "CI low", "CI high"))
+```
+
+```{r}
+#| label: fisher-line
+#| results: asis
+cat(sprintf("Fisher exact test, same versus different sessions: same-writer pairs p %s; different-writer pairs p %s.\n",
+            if (is.na(p_same_writer_sessions)) "= NA" else fp(p_same_writer_sessions),
+            if (is.na(p_diff_writer_sessions)) "= NA" else fp(p_diff_writer_sessions)))
+```
+
+```{r}
+#| label: tbl-t3-writer
+#| tbl-cap: "Test performance by the writer of the first image in each pair (writers 18 to 20). TMR: true match rate; TNR: true non-match rate."
+knitr::kable(by_writer, digits = 3, row.names = FALSE,
+             col.names = c("Writer", "Pairs", "Same-writer pairs", "TMR", "TNR", "Balanced accuracy", "AUC"))
+```
+
+```{r}
+#| label: fig-t3-digit
+#| fig-cap: "Test balanced accuracy by digit (the digit is the same in both images of a pair), with 95% bootstrap intervals over pairs. Dashed line: overall test balanced accuracy; dotted line: chance (0.5)."
+ggplot(by_digit, aes(factor(Digit), Bal_acc)) +
+  geom_hline(yintercept = .5, linetype = 3, colour = "grey40") +
+  geom_hline(yintercept = bal_hat, linetype = 2, colour = okabe[["red"]]) +
+  geom_pointrange(aes(ymin = CI_low, ymax = CI_high), colour = okabe[["blue"]], size = .5) +
+  scale_y_continuous(limits = c(.4, 1)) +
+  labs(x = "Digit", y = "Balanced accuracy")
+```
+
+## What Task 3 tells us
+
+On three writers the network never saw during training, the Siamese network separated same-writer from different-writer pairs well. At the distance threshold of 0.58 chosen on the validation pairs, balanced accuracy on the test pairs was 0.930 (95% bootstrap CI 0.917 to 0.941), with a true match rate of 0.931 and a true non-match rate of 0.929 (@tbl-t3-metrics, @tbl-t3-confusion). The AUC of 0.983 (95% CI 0.979 to 0.988) shows that the ranking of pairs by distance is good over all thresholds, not only at the one chosen (@fig-t3-roc, @fig-t3-dist; AUC is the probability that a random same-writer pair has a smaller distance than a random different-writer pair [@hanley1982; @fawcett2006]). Early stopping kept the weights from epoch 4 (validation loss 0.105) and stopped at epoch 6 (@fig-t3-loss). The test balanced accuracy is higher than the 0.877 seen on the validation pairs at the chosen threshold. With only three writers in each of the two sets, that difference could come from which writers happened to be in each set, so we do not read anything into it.
+
+Task 1 predicted that pairs from different sessions would be harder, and the session breakdown shows this for same-writer pairs (@tbl-t3-session). All 200 same-writer pairs from the same session were accepted (100%, exact CI 98.2% to 100%), against 91.3% (689 of 755) for same-writer pairs from different sessions (Fisher exact p = `r fp(p_same_writer_sessions)`). For different-writer pairs there was no clear session effect (91.4% against 93.2%, p = `r fp(p_diff_writer_sessions)`). In other words, the network is least sure when asked to connect two sessions of one person, which is the case the application cares about. The same-session figure of 100% is also not independent evidence, since those images are near-copies.
+
+Performance differed a little between the three test writers (balanced accuracy 0.960, 0.926 and 0.903 for writers 18, 19 and 20; @tbl-t3-writer), and between digits (@fig-t3-digit). With three writers and the pairs sharing images (2 000 test pairs use 2 475 distinct images, @tbl-t3-pairs), the intervals in @tbl-t3-metrics are likely to be too narrow, so they should be read as the lower bound on the uncertainty.
+
+The CNN and the Siamese network answer different questions. The CNN has to pick one writer out of 20 (chance 5%) and was tested on the same writers in a new session, whereas the Siamese network makes a yes/no decision (chance 50%) on new writers. The two accuracy figures are therefore not directly comparable, and a fair comparison needs both models to be evaluated on the same footing, which we return to later in the report.
+
+<!-- Tasks 4 onwards continue below. -->
+
+# References {.unnumbered}
+
+::: {#refs}
+:::
+
+```{r}
+#| label: references-database
+#| include: false
+# Reference database for the citations above, kept here at the end of the file.
+# It is written to references.bib (and the APA style file is fetched) when the
+# document is rendered, so no extra files are needed next to the .qmd.
+bib <- r"---(
+@article{srihari2002,
+  author = {Srihari, Sargur N. and Cha, Sung-Hyuk and Arora, Hina and Lee, Sangjik},
+  title = {Individuality of handwriting},
+  journal = {Journal of Forensic Sciences},
+  volume = {47}, number = {4}, pages = {856--872}, year = {2002}
+}
+@article{lecun1998,
+  author = {LeCun, Yann and Bottou, L{\'e}on and Bengio, Yoshua and Haffner, Patrick},
+  title = {Gradient-based learning applied to document recognition},
+  journal = {Proceedings of the IEEE},
+  volume = {86}, number = {11}, pages = {2278--2324}, year = {1998}
+}
+@inproceedings{fiel2015,
+  author = {Fiel, Stefan and Sablatnig, Robert},
+  title = {Writer identification and retrieval using a convolutional neural network},
+  booktitle = {Computer Analysis of Images and Patterns (CAIP 2015)},
+  publisher = {Springer}, year = {2015}, doi = {10.1007/978-3-319-23117-4_3}
+}
+@inproceedings{xing2016,
+  author = {Xing, Linjie and Qiao, Yu},
+  title = {{DeepWriter}: A multi-stream deep {CNN} for text-independent writer identification},
+  booktitle = {2016 15th International Conference on Frontiers in Handwriting Recognition (ICFHR)},
+  year = {2016}
+}
+@article{bromley1993,
+  author = {Bromley, Jane and Bentz, James W. and Bottou, L{\'e}on and Guyon, Isabelle and LeCun, Yann and Moore, Cliff and S{\"a}ckinger, Eduard and Shah, Roopak},
+  title = {Signature verification using a ``{S}iamese'' time delay neural network},
+  journal = {International Journal of Pattern Recognition and Artificial Intelligence},
+  volume = {7}, number = {4}, pages = {669--688}, year = {1993}, doi = {10.1142/S0218001493000339}
+}
+@inproceedings{hadsell2006,
+  author = {Hadsell, Raia and Chopra, Sumit and LeCun, Yann},
+  title = {Dimensionality reduction by learning an invariant mapping},
+  booktitle = {2006 IEEE Computer Society Conference on Computer Vision and Pattern Recognition (CVPR'06)},
+  volume = {2}, pages = {1735--1742}, year = {2006}
+}
+@article{roberts2017,
+  author = {Roberts, David R. and Bahn, Volker and Ciuti, Simone and Boyce, Mark S. and Elith, Jane and Guillera-Arroita, Gurutzeta and Hauenstein, Severin and Lahoz-Monfort, Jos{\'e} J. and Schr{\"o}der, Boris and Thuiller, Wilfried and Warton, David I. and Wintle, Brendan A. and Hartig, Florian and Dormann, Carsten F.},
+  title = {Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure},
+  journal = {Ecography},
+  volume = {40}, number = {8}, pages = {913--929}, year = {2017}, doi = {10.1111/ecog.02881}
+}
+@article{saeb2017,
+  author = {Saeb, Sohrab and Lonini, Luca and Jayaraman, Arun and Mohr, David C. and Kording, Konrad P.},
+  title = {The need to approximate the use-case in clinical machine learning},
+  journal = {GigaScience},
+  volume = {6}, number = {5}, pages = {gix019}, year = {2017}, doi = {10.1093/gigascience/gix019}
+}
+@inproceedings{nair2010,
+  author = {Nair, Vinod and Hinton, Geoffrey E.},
+  title = {Rectified linear units improve restricted {B}oltzmann machines},
+  booktitle = {Proceedings of the 27th International Conference on Machine Learning (ICML-10)},
+  pages = {807--814}, year = {2010}
+}
+@article{srivastava2014,
+  author = {Srivastava, Nitish and Hinton, Geoffrey and Krizhevsky, Alex and Sutskever, Ilya and Salakhutdinov, Ruslan},
+  title = {Dropout: A simple way to prevent neural networks from overfitting},
+  journal = {Journal of Machine Learning Research},
+  volume = {15}, number = {56}, pages = {1929--1958}, year = {2014}
+}
+@inproceedings{kingma2015,
+  author = {Kingma, Diederik P. and Ba, Jimmy},
+  title = {Adam: A method for stochastic optimization},
+  booktitle = {3rd International Conference on Learning Representations (ICLR 2015)},
+  year = {2015}
+}
+@article{clopper1934,
+  author = {Clopper, C. J. and Pearson, E. S.},
+  title = {The use of confidence or fiducial limits illustrated in the case of the binomial},
+  journal = {Biometrika},
+  volume = {26}, number = {4}, pages = {404--413}, year = {1934}
+}
+@article{efron1979,
+  author = {Efron, B.},
+  title = {Bootstrap methods: Another look at the jackknife},
+  journal = {The Annals of Statistics},
+  volume = {7}, number = {1}, pages = {1--26}, year = {1979}, doi = {10.1214/aos/1176344552}
+}
+@article{field2007,
+  author = {Field, C. A. and Welsh, A. H.},
+  title = {Bootstrapping clustered data},
+  journal = {Journal of the Royal Statistical Society: Series B (Statistical Methodology)},
+  volume = {69}, number = {3}, pages = {369--390}, year = {2007}
+}
+@article{friedman1937,
+  author = {Friedman, Milton},
+  title = {The use of ranks to avoid the assumption of normality implicit in the analysis of variance},
+  journal = {Journal of the American Statistical Association},
+  volume = {32}, number = {200}, pages = {675--701}, year = {1937}
+}
+@article{wilcoxon1945,
+  author = {Wilcoxon, Frank},
+  title = {Individual comparisons by ranking methods},
+  journal = {Biometrics Bulletin},
+  volume = {1}, number = {6}, pages = {80--83}, year = {1945}
+}
+@article{holm1979,
+  author = {Holm, Sture},
+  title = {A simple sequentially rejective multiple test procedure},
+  journal = {Scandinavian Journal of Statistics},
+  volume = {6}, number = {2}, pages = {65--70}, year = {1979}
+}
+@article{lakens2013,
+  author = {Lakens, Dani{\"e}l},
+  title = {Calculating and reporting effect sizes to facilitate cumulative science: A practical primer for t-tests and {ANOVA}s},
+  journal = {Frontiers in Psychology},
+  volume = {4}, pages = {863}, year = {2013}, doi = {10.3389/fpsyg.2013.00863}
+}
+@inproceedings{brodersen2010,
+  author = {Brodersen, Kay Henning and Ong, Cheng Soon and Stephan, Klaas Enno and Buhmann, Joachim M.},
+  title = {The balanced accuracy and its posterior distribution},
+  booktitle = {2010 20th International Conference on Pattern Recognition (ICPR)},
+  pages = {3121--3124}, year = {2010}
+}
+@article{fawcett2006,
+  author = {Fawcett, Tom},
+  title = {An introduction to {ROC} analysis},
+  journal = {Pattern Recognition Letters},
+  volume = {27}, number = {8}, pages = {861--874}, year = {2006}
+}
+@article{hanley1982,
+  author = {Hanley, James A. and McNeil, Barbara J.},
+  title = {The meaning and use of the area under a receiver operating characteristic ({ROC}) curve},
+  journal = {Radiology},
+  volume = {143}, number = {1}, pages = {29--36}, year = {1982}
+}
+)---"
+bib <- trimws(bib)
+if (!file.exists("references.bib") ||
+    !identical(paste(readLines("references.bib", warn = FALSE), collapse = "\n"), bib)) {
+  writeLines(bib, "references.bib")
+}
+if (!file.exists("apa.csl")) {
+  download.file("https://raw.githubusercontent.com/citation-style-language/styles/master/apa.csl",
+                "apa.csl", mode = "wb", quiet = TRUE)
+}
+```
