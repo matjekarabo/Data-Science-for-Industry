@@ -86,14 +86,14 @@ model_rand |> compile(
 )
 
 history_rand <- model_rand |> fit(
-  x_tr_r, y_tr_r,
+  x_tr_rand, y_tr_rand,
   epochs = 10,
   batch_size = 128,
-  validation_data = list(x_va_r, y_va_r)
+  validation_data = list(x_va_rand, y_va_rand)
 )
 
 
-# Accuracy by digit 
+# Validation by digit 
 pred  <- model |> predict(x_val)
 pred_class <- max.col(pred) - 1L
 meta_val  <- meta[val_rows, ]
@@ -112,3 +112,15 @@ meta_test <- meta[test_rows, ]
 
 acc_by_digit_test <- tapply(pred_class_test == y_test, meta_test$digit, mean)
 acc_by_digit_test
+
+# Results in a table
+results_table <- data.frame(
+  Digit = 0:4,
+  Validation = round(100 * as.numeric(acc_by_digit), 1),
+  Test = round(100 * as.numeric(acc_by_digit_test), 1)
+)
+
+knitr::kable(results_table,
+             col.names = c("Digit", "Validation accuracy (%)", "Test accuracy (%)"),
+             caption = "Accuracy by digit on Validation and test sets"
+)
