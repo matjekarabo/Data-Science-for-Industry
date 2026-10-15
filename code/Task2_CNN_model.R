@@ -112,6 +112,7 @@ meta_test <- meta[test_rows, ]
 
 acc_by_digit_test <- tapply(pred_class_test == y_test, meta_test$digit, mean)
 acc_by_digit_test
+<<<<<<< HEAD:Task2_CNN_model.R
 
 # Results in a table
 results_table <- data.frame(
@@ -124,3 +125,5 @@ knitr::kable(results_table,
              col.names = c("Digit", "Validation accuracy (%)", "Test accuracy (%)"),
              caption = "Accuracy by digit on Validation and test sets"
 )
+=======
+>>>>>>> 2cdd60aacb8abceafbb6a90952be82384ea41a67:code/Task2_CNN_model.R
