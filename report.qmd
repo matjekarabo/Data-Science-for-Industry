@@ -1,28 +1,4 @@
-get---
-title: "STA5073Z Assignment 2: Writer identification from handwritten digits"
-subtitle: "Working draft: Tasks 1 to 3 (later sections to follow)"
-author: "Group members: add names here"
-bibliography: references.bib
-csl: apa.csl
-link-citations: true
-format:
-  html:
-    toc: true
-    toc-depth: 3
-    number-sections: true
-    embed-resources: true
-    code-fold: true
-    code-summary: "Show code"
-    code-tools: true
-    fig-width: 7
-    fig-height: 4.2
-    fig-dpi: 150
-    fig-cap-location: bottom
-    tbl-cap-location: top
-execute:
-  warning: false
-  message: false
----
+get--- title: "STA5073Z Assignment 2: Writer identification from handwritten digits" subtitle: "Working draft: Tasks 1 to 3 (later sections to follow)" author: "Group members: add names here" bibliography: references.bib csl: apa.csl link-citations: true format: html: toc: true toc-depth: 3 number-sections: true embed-resources: true code-fold: true code-summary: "Show code" code-tools: true fig-width: 7 fig-height: 4.2 fig-dpi: 150 fig-cap-location: bottom tbl-cap-location: top execute: warning: false message: false ---
 
 ```{r}
 #| label: setup
@@ -75,20 +51,15 @@ fp <- function(p) if (p < 1e-16) "< 1e-16" else paste("=", formatC(p, format = "
 data_path <- if (file.exists("data/handwriting.rds")) "data/handwriting.rds" else "handwriting.rds"
 ```
 
-# Introduction {#sec-intro}
+# 1. Introduction
 
-Handwriting is individual enough that examiners routinely use it to judge who wrote a document. @srihari2002 analysed samples from 1,500 writers and reported that a statistical model could tell, with about 96% confidence, whether two handwriting samples came from the same writer. Deep learning has since been applied to the same problem. Convolutional neural networks (CNNs), whose use for digit recognition was established by @lecun1998, have been used to identify writers from images of their handwriting [@fiel2015; @xing2016]. Deciding whether two samples share an author can instead be treated as a similarity-learning problem. @bromley1993 introduced the "Siamese" architecture for signature verification, in which two inputs pass through the same network with shared weights and are compared in the output space.
+Handwriting is individual enough that examiners routinely use it to judge who wrote a document. @srihari2002 analysed samples from 1,500 writers and reported that a statistical model could tell, with about 96% confidence, whether two handwriting samples came from the same writer. Deep learning has since been applied to the same problem. Convolutional neural networks (CNNs), whose use for digit recognition was established by @lecun1998, have been used to identify writers from images of their handwriting [@fiel2015; @xing2016]. Deciding whether two samples share an author can instead be treated as a similarity-learning problem. @bromley1993 introduced the "Siamese" architecture for signature verification, in which two inputs pass through the same network with shared weights and are compared in the output space. This report seeks to use two neural network models (CNN and Siamese) for writer identification of simulated digit images.
 
-This report works with a simulated data set of 25 000 images of handwritten digits (0 to 4) from 20 writers, each recorded in five sessions. We first explore the data (Task 1), then build a CNN that identifies the writer (Task 2) and a Siamese network that decides whether two images share a writer (Task 3). The images within a writer–digit–session combination are near copies of one another, so the way the data are split matters as much as the model. We treat the split as an explicit design decision from the start, and later sections build on these results to examine the evaluation strategy, hyperparameter sensitivity and a comparison of the two models.
-
-# Task 1: Exploration of the data {#sec-task1}
-
-We first checked the structure of the data and then looked at images in three ways, each holding everything fixed except one factor: all 20 writers for one digit, ten writers' versions of one digit across the five sessions, and the same ten writers' replicates within one session. To put numbers on what the images show, we computed the Euclidean distance between pixel vectors (784 values scaled to [0, 1]) for 1000 random draws. Each draw gives three same-digit distances from one reference image: to another image by the same writer in the same session (within-session), to an image by the same writer in a different session (across-session), and to an image by a different writer in the same session (between-writer).
-
-**Statistics.** The three distances in a draw share a reference image, so they are matched. We compare them with a Friedman test [@friedman1937], follow up with paired Wilcoxon signed-rank tests [@wilcoxon1945] adjusted with Holm's method [@holm1979], and report the paired effect size $d_z$ [@lakens2013]. Intervals are percentile bootstrap intervals from 2000 resamples of the draws [@efron1979].
+# 2. Data exploration
 
 ```{r}
 #| label: task1-load
+#| include: false
 ##Task 1: Exploration of the data
 
 data <- readRDS(data_path)
@@ -105,94 +76,58 @@ y_person <- data$metadata$person_id - 1L
 
 
 table(metadata$person_id, metadata$session) #250 images per person per session
-range(table(metadata$person_id, metadata$session)) # ADDED: compact balance check (min and max cell)
-```
 
-## Variation across writers, sessions and replicates
+dir.create("results", showWarnings = FALSE)
 
-```{r}
-#| label: fig-t1-writers
-#| fig-cap: "All 20 writers for one digit (session 1, replicate 1)."
-#| fig-subcap: ["Digit 0", "Digit 1", "Digit 2", "Digit 3", "Digit 4"]
-#| layout-ncol: 1
-#| fig-width: 7
-#| fig-height: 6
-##In each plot, the digits, session and replicate are fixed
-#Function that draws a single image
+# Draw one image from its row number
 draw_image <- function(i){
-  m <- data$images[i,,,1]
-  image(t(m[28:1,]), col = gray.colors(256, start = 1, end = 0),
+  m <- data$images[i, , , 1]
+  image(t(m[28:1, ]), col = gray.colors(256, start = 1, end = 0),
         axes = FALSE, asp = 1)
-
 }
 
-#All 20 writers for one digit
-plot_writers <-  function(d,s = 1, r = 1){ #s = session, r = replicate
-  plot_settings <- par(mfrow = c(4,5), mar = c(0.3, 0.3, 1.5, 0.3), oma = c(0, 0, 2.5, 0))
-  on.exit(par(plot_settings))
-
+# All 20 writers for one digit (session and replicate fixed)
+plot_writers <- function(d, s = 1, r = 1){
+  op <- par(mfrow = c(4, 5), mar = c(0.3, 0.3, 1.5, 0.3), oma = c(0, 0, 2.5, 0))
+  on.exit(par(op))
   for (p in 1:20){
     i <- which(metadata$person_id == p & metadata$digit == d &
-               metadata$session == s & metadata$replicate == r)
+                 metadata$session == s & metadata$replicate == r)
     draw_image(i)
     title(paste("Writer", p), cex.main = 0.9)
   }
-  mtext(paste0("Digit ", d, "(session ", s, ", replicate ", r, ")"),
+  mtext(paste0("Digit ", d, " (session ", s, ", replicate ", r, ")"),
         outer = TRUE, font = 2)
 }
 
-##plots of the digits
-for (d in 0:4) plot_writers(d)
-```
-
-```{r}
-#| label: fig-t1-sessions
-#| fig-cap: "One digit for a random sample of ten writers across the five sessions (replicate 1)."
-#| fig-subcap: ["Digit 0", "Digit 1", "Digit 2", "Digit 3", "Digit 4"]
-#| layout-ncol: 1
-#| fig-width: 6
-#| fig-height: 10
+# Random sample of writers across sessions (replicate fixed)
 plot_sessions_sample <- function(d, n_people = 10, r = 1, seed = 1){
-  # d = digit, r = replicate (fixed), seed = makes the sample reproducible
   set.seed(seed)
   people <- sort(sample(1:20, n_people))
-
-  plot_settings <- par(mfrow = c(n_people, 5), mar = c(0.2, 0.2, 1.2, 0.2),
-                       oma = c(0, 5, 2.5, 0), xpd = NA)  # wider left margin so "Writer 11" is not clipped
-  on.exit(par(plot_settings))
-
+  op <- par(mfrow = c(n_people, 5), mar = c(0.2, 0.2, 1.2, 0.2),
+            oma = c(0, 5, 2.5, 0), xpd = NA)
+  on.exit(par(op))
   for (p in people){
     for (s in 1:5){
       i <- which(metadata$person_id == p & metadata$digit == d &
                    metadata$session == s & metadata$replicate == r)
       draw_image(i)
-      if (p == people[1]) title(paste("Session", s), cex.main = 0.9)  # column labels on top row only
-      if (s == 1) mtext(paste("Writer", p), side = 2, line = 0.5, las = 1, cex = 0.7)  # row labels on first column only
+      if (p == people[1]) title(paste("Session", s), cex.main = 0.9)
+      if (s == 1) mtext(paste("Writer", p), side = 2, line = 0.5, las = 1, cex = 0.7)
     }
   }
   mtext(paste0("Digit ", d, " across sessions (replicate ", r, ")"),
         outer = TRUE, font = 2)
 }
 
-for (d in 0:4) plot_sessions_sample(d)
-```
-
-```{r}
-#| label: fig-t1-replicates
-#| fig-cap: "One digit for the same ten writers across five replicates within session 1."
-#| fig-subcap: ["Digit 0", "Digit 1", "Digit 2", "Digit 3", "Digit 4"]
-#| layout-ncol: 1
-#| fig-width: 6
-#| fig-height: 10
-plot_replicates <- function(d, s = 1, n_people = 10, reps = c(1, 11, 21, 31, 41), seed = 1){
-  # d = digit, s = session (fixed), reps = which replicates to show
+# Same writers across replicates (session fixed)
+plot_replicates <- function(d, s = 1, n_people = 10,
+                            reps = c(1, 11, 21, 31, 41), seed = 1){
   set.seed(seed)
   people <- sort(sample(1:20, n_people))
-
-  plot_settings <- par(mfrow = c(n_people, length(reps)), mar = c(0.2, 0.2, 1.2, 0.2),
-                       oma = c(0, 5, 2.5, 0), xpd = NA)
-  on.exit(par(plot_settings))
-
+  op <- par(mfrow = c(n_people, length(reps)), mar = c(0.2, 0.2, 1.2, 0.2),
+            oma = c(0, 5, 2.5, 0), xpd = NA)
+  on.exit(par(op))
   for (p in people){
     for (r in reps){
       i <- which(metadata$person_id == p & metadata$digit == d &
@@ -205,14 +140,79 @@ plot_replicates <- function(d, s = 1, n_people = 10, reps = c(1, 11, 21, 31, 41)
   mtext(paste0("Digit ", d, " across replicates (session ", s, ")"),
         outer = TRUE, font = 2)
 }
-
-for (d in 0:4) plot_replicates(d)
 ```
 
-## Within-session, across-session and between-writer distances
+## 2.1 Data Overview
+
+The data consisted of 25,000 greyscale images of 28 x 28 pixels, showing the digits 0 to 4. Each of the 20 writers wrote each digit 50 times (replicate) in each of the 5 sessions, giving a total of 1,250 images per writer. The original pixel values \[0,255\], were scaled to \[0, 1\] before fitting the neural network models, because scaling the pixel values creates a stable foundation for gradient optimisation @afzali2026. The metadata contains the image ID, writer ID, digit, session number and replicate number. To explore the sources of variability in the data, four analyses were carried out including variation between writers, variation across sessions for a subset of writers, variation within sessions (across replicates) for a subset of writers, and a quantitative comparison of the three using pixel distances.
+
+## 2.2 Variation between writers
+
+To examine variation between writers, each digit was plotted for all 20 writers, with session and replicate fixed at 1. This produced five plots, one per digit. @williams2019 states that no two people's handwriting can ever be the same: they may have a similar style but they will differ in the characteristics of their handwriting. Variability that distinguishes one person's handwriting from another's was therefore assessed using characteristics such as size, shape and slant. @fig-writers shows clear differences in handwriting style between the 20 writers.
+
+```{r}
+#| label: fig-writers
+#| fig-cap: "[Digits 0 (a) and 1 (b) for all 20 writers, with session 1 and replicate 1 fixed.]"
+#| fig-width: 10
+#| fig-height: 5.5
+plot_writers(c(0, 1))
+```
+
+Variation in shape is most clearly observed in digits 0 and 1 (@fig-writers). For example, although all the 1s have a base, some have a hook at the top (writers 1, 7 and 14), while others have a curved body that resembles the digit 2 (writers 3, 9 and 17). For digit 0, shapes vary from circular to oval. The remaining digits follow a more consistent style, with the primary differences being slant and size. Size also varies whereby some writers (3 and 9) write small and compact digits, while others fill the space with large digits. Slant varies from upright to a rightward slant (writers 18 and 10), while writer 19 slants to the left. These differences in size, shape and slant are features that the models could learn for writer identification, although some digits may reveal more information than others. Digits 0 and 1, which show more shape variation across writers, may provide stronger information for distinguishing between writers than digits 2, 3 and 4, whose shapes are more uniform.
+
+## 2.3 Variation across sessions
+
+To assess whether a person's handwriting changes between sessions, 10 writers were randomly sampled and each digit was plotted across the 5 sessions, with the replicate fixed at 1.
+
+```{r}
+#| label: fig-sessions
+#| fig-cap: "[Digits 1 (a) and 0 (b) for ten randomly sampled writers (seed 1), with replicate 1 fixed. Rows are writers and columns are sessions 1 to 5.]"
+#| fig-width: 9
+#| fig-height: 10
+plot_sessions_sample(c(1, 0))
+```
+
+```{r}
+#| label: save-sessions
+#| include: false
+for (d in 0:4){
+  png(sprintf("results/sessions_digit_%d.png", d), width = 700, height = 1000)
+  plot_sessions_sample(d)
+  invisible(dev.off())
+}
+```
+
+There are visible changes in style between sessions, and these are more noticeable for some digits than others, such as 0 and 1. Although some changes are noticeable, some writers remained consistent in certain characteristics. For example, writer 3 wrote small digits in all sessions and, for digit 1, kept their signature hook in every session, as writer 17 did. Other writers changed their characteristic style, for example, writer 19 slanted the digits slightly to the left in the first session, but the digits became more upright as the sessions progressed. Writer 1's 1s also changed between sessions because some have hooks and the lengths of the strokes differ. This indicates that a writer's handwriting may change between sessions. Although some of these changes are minor, they alter a writer's characteristic style from session 1, so the models may identify some writers less accurately in a new session.
+
+## 2.4 Variation across replicates
+
+```{r}
+#| label: fig-replicates
+#| fig-cap: "[Same ten writers as the sessions figure, session 1 fixed, replicates 1, 11, 21, 31 and 41.]"
+#| fig-width: 6
+#| fig-height: 8
+plot_replicates(1)
+```
+
+```{r}
+#| label: save-replicates
+#| include: false
+for (d in 0:4){
+  png(sprintf("results/replicates_digit_%d.png", d), width = 700, height = 1000)
+  plot_replicates(d)
+  invisible(dev.off())
+}
+```
+
+To assess whether handwriting style drifted across replicates within a session, the same 10 writers were used, with replicates 1, 11, 21, 31 and 41 plotted for session 1 (fixed). The digits were near-identical across the replicates, with little to no change in style. This indicates that a writers handwriting within one session is usually the same.
+
+## 2.5 Quantifying the variation
+
+To quantify the variation between writers, across sessions and within sessions, the euclidean distance between two images was computed over all 784 pixels. For a sample of 1,000 draws, the function picked a writer, a digit, two sessions and two replicates and formed three comparisons with the digit matched within a session (comparing replicates), across sessions (the same writer) and between writers. The three distances were compared using a Friedman test @friedman1937, followed by the paired Wilcoxon signed-rank tests @wilcoxon1945 adjusted with the Holm's method @holm1979. The paired effect size d~z~ was also reported, and defined as the mean paired difference divided by the standard deviation of the differences @lakens2013. Intervals are percentile bootstrap intervals from the 2000 resamples of the draws @efron1979.
 
 ```{r}
 #| label: task1-distances
+#| include: false
 # Flatten each 28x28 image into one row of 784 pixel values (scaled 0-1)
 x_flat <- matrix(data$images / 255, nrow = dim(data$images)[1])
 
@@ -235,9 +235,9 @@ for (k in 1:n){
   s <- sample(1:5, 2)                   # two different sessions
   r <- sample(1:50, 2)                  # two different replicates
   q <- sample(setdiff(1:20, p), 1)      # a different writer
-
+  
   a <- get_i(p, d, s[1], r[1])          # the reference image
-
+  
   results[nrow(results) + 1, ] <- list("Within-session", d, dist_img(a, get_i(p, d, s[1], r[2])))
   results[nrow(results) + 1, ] <- list("Across-session", d, dist_img(a, get_i(p, d, s[2], r[2])))
   results[nrow(results) + 1, ] <- list("Between-writer", d, dist_img(a, get_i(q, d, s[1], r[2])))
@@ -246,23 +246,17 @@ for (k in 1:n){
 results$type <- factor(results$type,
                        levels = c("Within-session", "Across-session", "Between-writer"))
 
-# Numbers
-aggregate(dist ~ type, data = results, FUN = function(v) c(mean = mean(v), sd = sd(v)))
-
-# Mean distance for each digit (rows) and pair type (columns)
-tab <- with(results, tapply(dist, list(Digit = digit, Type = type), mean))
-
-# Round, and add a column showing how much bigger across-session is than within-session
-tab <- as.data.frame(round(tab, 2))
-tab$`Across / within` <- round(tab$`Across-session` / tab$`Within-session`, 1)
-tab
 ```
 
 ```{r}
 #| label: task1-stats
 #| include: false
-# ADDED: statistics behind the distance comparison
-M <- matrix(results$dist, ncol = 3, byrow = TRUE,          # rows = draws; the 3 distances of a draw are matched
+# Helpers used by the inline numbers in the text
+f2 <- function(x, d = 2) formatC(x, format = "f", digits = d)
+fp <- function(p) if (p < 1e-16) "< 1e-16" else paste("=", signif(p, 2))
+
+# rows = draws; the 3 distances of a draw are matched
+M <- matrix(results$dist, ncol = 3, byrow = TRUE,
             dimnames = list(NULL, c("Within", "Across", "Between")))
 dig <- results$digit[seq(1, nrow(results), by = 3)]        # digit of each draw
 
@@ -275,6 +269,7 @@ desc <- do.call(rbind, lapply(colnames(M), function(nm) {
   data.frame(Pair = nm, n = length(v), Mean = mean(v), SD = sd(v), Median = median(v),
              IQR = IQR(v), CI_low = ci[1], CI_high = ci[2])
 }))
+desc$Pair <- c("Within-session", "Across-session", "Between-writer")  
 
 fr <- friedman.test(M)
 kendall_w <- unname(fr$statistic) / (nrow(M) * (ncol(M) - 1))
@@ -290,72 +285,81 @@ pw$p_Holm <- p.adjust(pw$p_raw, method = "holm")
 ratio_by_digit <- do.call(rbind, lapply(0:4, function(dg) {
   ix <- which(dig == dg); w <- M[ix, "Within"]; a <- M[ix, "Across"]
   bs <- replicate(B, { s <- sample.int(length(ix), replace = TRUE); mean(a[s]) / mean(w[s]) })
-  data.frame(Digit = dg, n = length(ix), Within = mean(w), Across = mean(a), Ratio = mean(a) / mean(w),
+  data.frame(Digit = dg, n = length(ix), Within = mean(w), Across = mean(a),
+             Between = mean(M[ix, "Between"]),                                
+             Ratio = mean(a) / mean(w),
              CI_low = unname(quantile(bs, .025)), CI_high = unname(quantile(bs, .975)))
 }))
 ```
 
+Two images of the same digit by the same writer in the same session were near identical (mean distance = 2.72, SD = 0.50), which indicates that the 50 replicates are near copies of one another. The across session of the same writer has a mean distance of 7.15 and SD = 1.63. The highest variation was recorded between the different writers (mean distance = 8.59, SD = 1.14) (\@tbl_t1_desc, @fig-tl-dist). The three distances differ clearly in the matched draws (Friedman chi-squared = `r f2(unname(fr$statistic), 1)` on `r unname(fr$parameter)` df, p `r fp(fr$p.value)`; Kendall’s W = `r f2(kendall_w)`), and all three Holm-adjusted pairwise tests give p \< 1e-16 (\@tbl-t1-tests).
+
 ```{r}
 #| label: tbl-t1-desc
-#| tbl-cap: "Pixel distance between two images of the same digit, by pair type (1000 matched draws). CI: 95% percentile bootstrap interval for the mean."
-d_out <- desc
-d_out$Pair <- c("Within-session", "Across-session", "Between-writer")
-knitr::kable(d_out, digits = 2, row.names = FALSE,
-             col.names = c("Pair type", "n", "Mean", "SD", "Median", "IQR", "CI low", "CI high"))
+#| tbl-cap: "Pixel distance between two images of the same digit, by comparison type (1,000 draws), with 95% bootstrap intervals for the mean."
+knitr::kable(desc, digits = 2, row.names = FALSE, align = "lccccccc",
+             col.names = c("Comparison", "Draws", "Mean", "SD", "Median", "IQR",
+                           "95% CI low", "95% CI high"))
 ```
 
 ```{r}
 #| label: fig-t1-dist
-#| fig-cap: "Distribution of pixel distance by pair type: box plots, with the mean and its 95% bootstrap interval (red, offset to the right)."
-lev <- c(Within = "Within-session", Across = "Across-session", Between = "Between-writer")
-dist_long <- data.frame(Pair = factor(rep(names(lev), each = nrow(M)), levels = names(lev), labels = lev),
-                        dist = as.vector(M))
-desc$Pair <- factor(desc$Pair, levels = names(lev), labels = lev)
-ggplot(dist_long, aes(Pair, dist)) +
-  geom_boxplot(width = .5, outlier.size = .7, fill = "grey90", colour = "grey25") +
-  geom_pointrange(data = desc, aes(y = Mean, ymin = CI_low, ymax = CI_high),
-                  colour = okabe[["red"]], size = .4, position = position_nudge(x = .38)) +
-  labs(x = NULL, y = "Euclidean pixel distance",
-       caption = sprintf("n = %d matched draws. Friedman test: chi-squared(%d) = %.1f, p %s; Kendall's W = %.2f.",
-                         nrow(M), unname(fr$parameter), unname(fr$statistic), fp(fr$p.value), kendall_w))
+#| fig-cap: "Distribution of pixel distances by comparison type."
+#| fig-width: 6
+#| fig-height: 4
+boxplot(M, names = c("Within-session", "Across-session", "Between-writer"),
+        ylab = "Pixel distance")
 ```
+
+With 1,000 draws almost any difference would be significant, so the effect sizes are more informative than the p-values. The across-session minus within-session gap is 4.43 (95% CI 4.33 to 4.53; \$d_z\$ = 2.72), whereas the between-writer minus across-session gap is only 1.44 (95% CI 1.33 to 1.56; \$d_z\$ = 0.77). In practical terms, a change of session moves a writer’s digit about three quarters of the way to where a different writer’s digit sits ((7.15 − 2.72) / (8.59 − 2.72)). A writer is therefore only partly recognisable from the pixels of a single image, and any model has to cope with the same person looking different from one session to the next.
 
 ```{r}
 #| label: tbl-t1-tests
-#| tbl-cap: "Paired comparisons of the three distances (Wilcoxon signed-rank tests, Holm-adjusted p-values). Mean difference with 95% bootstrap interval; d_z is the paired standardised effect size."
-pw_out <- data.frame(pw$Comparison, pw$Mean_diff, pw$CI_low, pw$CI_high, pw$d_z,
-                     format.pval(pw$p_raw, digits = 2, eps = 1e-16), format.pval(pw$p_Holm, digits = 2, eps = 1e-16))
-knitr::kable(pw_out, digits = 2, row.names = FALSE,
-             col.names = c("Comparison", "Mean difference", "CI low", "CI high", "d_z", "p (raw)", "p (Holm)"))
+#| tbl-cap: "Paired differences between comparison types: mean difference with 95% bootstrap interval, paired effect size dz, and Holm-adjusted Wilcoxon signed-rank p-values."
+tab_tests <- data.frame(
+  Comparison = pw$Comparison,
+  `Mean difference (95% CI)` = sprintf("%.2f (%.2f to %.2f)", pw$Mean_diff, pw$CI_low, pw$CI_high),
+  dz = round(pw$d_z, 2),
+  `Holm-adjusted p` = ifelse(pw$p_Holm < 1e-16, "< 1e-16", signif(pw$p_Holm, 2)),
+  check.names = FALSE)
+knitr::kable(tab_tests, align = "lccc")
+```
+
+The ratio of across-session to within-session distance was above 1 for every digit, and its confidence interval never came near 1 (\@fig-t1-ratio, \@tbl-t1-ratio). It was highest for digit 1 (3.40; within-session distance 2.01) and lowest for digit 4 (2.36). Digit 1 is a thin stroke, so a small shift in position or slant changes which pixels are lit, which is a plausible reason for its larger ratio, although this was not tested. \[One sentence on where digit 0 ranks.\] Pixel distance is a crude measure, because a small shift in a digit’s position can inflate the distance between two images of the same shape, so these numbers describe the data and do not by themselves show how well a model can separate writers.
+
+```{r}
+#| label: tbl-t1-ratio
+#| tbl-cap: "Mean pixel distance by digit and comparison type, and the ratio of across-session to within-session distance with a 95% bootstrap interval."
+tab_digit <- data.frame(
+  Digit = ratio_by_digit$Digit,
+  Draws = ratio_by_digit$n,
+  `Within-session` = round(ratio_by_digit$Within, 2),
+  `Across-session` = round(ratio_by_digit$Across, 2),
+  `Between-writer` = round(ratio_by_digit$Between, 2),
+  `Across / within (95% CI)` = sprintf("%.2f (%.2f to %.2f)", ratio_by_digit$Ratio,
+                                       ratio_by_digit$CI_low, ratio_by_digit$CI_high),
+  check.names = FALSE)
+knitr::kable(tab_digit, align = "cccccc")
 ```
 
 ```{r}
 #| label: fig-t1-ratio
-#| fig-cap: "Ratio of the mean across-session distance to the mean within-session distance, by digit, with 95% bootstrap intervals. A ratio of 1 would mean that changing session adds no variation beyond that within a session."
-ggplot(ratio_by_digit, aes(factor(Digit), Ratio)) +
-  geom_hline(yintercept = 1, linetype = 3, colour = "grey40") +
-  geom_pointrange(aes(ymin = CI_low, ymax = CI_high), colour = okabe[["blue"]], size = .5) +
-  labs(x = "Digit", y = "Across-session / within-session distance",
-       caption = "Each point uses the draws for that digit (n per digit shown in the table below).")
+#| fig-cap: "Ratio of across-session to within-session distance by digit, with 95% bootstrap intervals. The dashed line marks a ratio of 1."
+#| fig-width: 6
+#| fig-height: 4
+plot(ratio_by_digit$Digit, ratio_by_digit$Ratio, pch = 19, xaxt = "n",
+     xlab = "Digit", ylab = "Across / within distance",
+     ylim = range(c(1, ratio_by_digit$CI_low, ratio_by_digit$CI_high)))
+axis(1, at = 0:4)
+arrows(ratio_by_digit$Digit, ratio_by_digit$CI_low,
+       ratio_by_digit$Digit, ratio_by_digit$CI_high,
+       angle = 90, code = 3, length = 0.05)
+abline(h = 1, lty = 2)
 ```
 
-```{r}
-#| label: tbl-t1-ratio
-#| tbl-cap: "Mean within- and across-session distances and their ratio, by digit."
-knitr::kable(ratio_by_digit, digits = 2, row.names = FALSE,
-             col.names = c("Digit", "n draws", "Within", "Across", "Ratio", "CI low", "CI high"))
-```
+This has a consequence for how the data are split in the next tasks. A random split would put near-copies of the same image in both the training and the test set, so it would measure memory more than generalisation.
 
-## What Task 1 tells us
-
-Two images of the same digit by the same writer in the same session were very close (mean distance 2.72, SD 0.50), which fits the 50 replicates being near copies of one another. Moving to a different session of the same writer more than doubled the distance (7.15, SD 1.63), and a different writer's image was further again (8.59, SD 1.14) (@tbl-t1-desc, @fig-t1-dist). The three distances differ clearly in the matched draws (Friedman chi-squared = `r f2(unname(fr$statistic), 1)` on `r unname(fr$parameter)` df, p `r fp(fr$p.value)`; Kendall's W = `r f2(kendall_w)`), and all three Holm-adjusted pairwise tests give p < 1e-16 (@tbl-t1-tests). With 1 000 draws almost any difference would be significant, so the effect sizes are the more useful numbers. The across-session minus within-session gap is 4.43 (95% CI 4.33 to 4.53; d~z~ = 2.72), where d~z~ is the mean paired difference divided by the standard deviation of the differences [@lakens2013]. The between-writer minus across-session gap is only 1.44 (95% CI 1.33 to 1.56; d~z~ = 0.77).
-
-The practical point is that a change of session moves a writer's digit about three quarters (76%) of the way to where a different writer's digit sits ((7.15 - 2.72) / (8.59 - 2.72)). The writer is therefore only partly recognisable from the pixels of a single image, and any model has to cope with the same person looking different from session to session. The ratio of across-session to within-session distance was above 1 for every digit and its confidence interval never came near 1 (@fig-t1-ratio, @tbl-t1-ratio). It was highest for digit 1 (3.40; within-session distance 2.01) and lowest for digit 4 (2.36). The digit 1 is a thin stroke, so a small shift in position or slant changes which pixels are lit, and that is a plausible reason for its larger ratio, although we did not test it.
-
-This has two consequences for the next tasks. First, a random split would put near-copies of the same image in both the training and the test set, so it would measure memory more than generalisation, and we therefore split by session in Task 2 and by writer in Task 3. Second, these are raw pixel distances between single pairs, so they describe the data and do not by themselves show how well a model can separate writers.
-
-
-# Task 2: CNN that predicts the writer {#sec-task2}
+# 3. Convolutional Neural Network (CNN)
 
 Task 2 treats writer identification as a 20-class classification problem: the input is an image and the output is the writer's ID. All 20 writers appear in the training data, so this is identification of known writers, not verification of unknown ones.
 
@@ -653,8 +657,7 @@ Accuracy was similar across digits (55.5% to 69.6%), with digit 3 highest at 69.
 
 The errors are concentrated in particular writers more than in particular digits (@fig-t2-writer, @fig-t2-confusion). The clearest case is writer 10: 240 of that writer's 250 test images (96%) were assigned to writer 2 (@tbl-t2-confusions). Writer 5 was mistaken for writer 13 in 72% of cases, and writer 13 for writer 5 in 40%, so those two seem to write alike in session 5. The confusion matrix shows that this happens but not why, so we report it as an observation only.
 
-
-# Task 3: Siamese network (same writer or not?) {#sec-task3}
+# 4. Siamese network
 
 Task 3 changes the question. Instead of naming the writer, the network judges whether two images were written by the same person, so it can be applied to writers it has never seen (verification instead of identification). We use a Siamese network [@bromley1993]: one encoder turns each image into a 16-number embedding, the same encoder (with shared weights) is applied to both images in a pair, and the model outputs the Euclidean distance between the two embeddings. The encoder has two convolution and max-pooling stages (16 and 32 filters), global average pooling and a dense layer of 16 units.
 
@@ -981,12 +984,15 @@ Performance differed a little between the three test writers (balanced accuracy 
 
 The CNN and the Siamese network answer different questions. The CNN has to pick one writer out of 20 (chance 5%) and was tested on the same writers in a new session, whereas the Siamese network makes a yes/no decision (chance 50%) on new writers. The two accuracy figures are therefore not directly comparable, and a fair comparison needs both models to be evaluated on the same footing, which we return to later in the report.
 
-<!-- Tasks 4 onwards continue below. -->
+# 5. Train, validation and test strategy
 
-# References {.unnumbered}
+# 6. Hyperparameter optimisation
 
-::: {#refs}
-:::
+# 7. Comparison and discussion
+
+# 8. Appendices
+
+# 9. References
 
 ```{r}
 #| label: references-database
@@ -1120,6 +1126,23 @@ bib <- r"---(
   title = {The meaning and use of the area under a receiver operating characteristic ({ROC}) curve},
   journal = {Radiology},
   volume = {143}, number = {1}, pages = {29--36}, year = {1982}
+}
+@online{afzali2026,
+  author  = {Afzali, R.},
+  title   = {Why do we normalize images?},
+  year    = {2026},
+  url     = {https://medium.com/@rohollah2afzali/why-do-we-normalize-images-aa51ec704d86},
+  note    = {Medium. Accessed: October 12, 2026}
+}
+
+
+@online{williams2019,
+  author  = {Williams, L.},
+  title   = {What are the 12 characteristics of handwriting?},
+  year    = {2019},
+  journal = {The Pen Company Blog},
+  url     = {https://www.thepencompany.com/blog/handwriting/what-are-the-12-characteristics-of-handwriting/},
+  note    = {Accessed: 13 October 2026}
 }
 )---"
 bib <- trimws(bib)
