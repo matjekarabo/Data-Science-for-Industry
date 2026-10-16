@@ -363,12 +363,6 @@ This has a consequence for how the data are split in the next tasks. A random sp
 
 Task 2 treats writer identification as a 20-class classification problem: the input is an image and the output is the writer's ID. All 20 writers appear in the training data, so this is identification of known writers, not verification of unknown ones.
 
-**Split.** We split by session: sessions 1 to 3 for training (15 000 images), session 4 for validation and session 5 for testing (5 000 images each). This asks whether a model trained on a person's earlier writing recognises them in a later session, and it stops near-identical replicates (@sec-task1) from straddling the training and test sets. Random splitting of records that share a source is known to give optimistic results: random cross-validation on structured data underestimates predictive error because the dependence between records is ignored [@roberts2017], and @saeb2017 make the same case for subject-wise versus record-wise validation. As a check, we also trained the same model on a random split (15 000 images for training, 5 000 for validation).
-
-**Model.** The CNN has two convolution and max-pooling blocks (32 and then 64 filters of size 3 × 3, following the convolution–pooling design of @lecun1998) with rectified linear activations [@nair2010], a flatten layer, a dense layer of 64 units with 30% dropout, which randomly removes units during training to reduce overfitting [@srivastava2014], and a softmax output of 20 units. We trained with sparse categorical cross-entropy and the Adam optimiser [@kingma2015] for 10 epochs with batches of 128.
-
-**What the measures capture.** Accuracy is the proportion of images assigned to the right writer. In practice it answers: of the pages we receive from known writers in a new session, how many do we attribute to the right person? Chance is 1/20 = 5%, because the 20 writers are equally represented. The confusion matrix shows which writers are mistaken for which, that is, whose handwriting looks alike to the model. Accuracy by digit asks how much writer information a single digit carries, which matters when an examiner only has one kind of character to work with.
-
 **Uncertainty.** The 50 replicates within a writer, digit and session are near copies, so images are not independent and a binomial interval treats the test set as holding more information than it does. We report the exact Clopper–Pearson interval [@clopper1934] for reference, but base our uncertainty on a cluster bootstrap. Whole writer–digit groups (100 in the test session, 20 per digit) are resampled with replacement and the accuracy is recomputed 2000 times [@efron1979; @field2007]. Differences between digits are tested with a Friedman test over writers [@friedman1937], using each writer's accuracy on each digit as the unit.
 
 ```{r}
@@ -399,10 +393,9 @@ y_val <- y_person[val_rows]
 x_test <- x[test_rows, , , , drop = FALSE]
 y_test <- y_person[test_rows]
 
-# Checking if the split worked
-dim(x_train); dim(x_val); dim(x_test)
-table(y_train)
 ```
+
+**Split.** We split by session: sessions 1 to 3 for training (15 000 images), session 4 for validation and session 5 for testing (5 000 images each). This asks whether a model trained on a person's earlier writing recognises them in a later session, and it stops near-identical replicates (@sec-task1) from straddling the training and test sets. Random splitting of records that share a source is known to give optimistic results: random cross-validation on structured data underestimates predictive error because the dependence between records is ignored [@roberts2017], and @saeb2017 make the same case for subject-wise versus record-wise validation. As a check, we also trained the same model on a random split (15 000 images for training, 5 000 for validation).
 
 ```{r}
 #| label: task2-cnn
@@ -473,6 +466,46 @@ history_rand <- model_rand |> fit(
 )
 ```
 
+**Model.** The CNN has two convolution and max-pooling blocks (32 and then 64 filters of size 3 × 3, following the convolution–pooling design of @lecun1998) with rectified linear activations [@nair2010], a flatten layer, a dense layer of 64 units with 30% dropout, which randomly removes units during training to reduce overfitting [@srivastava2014], and a softmax output of 20 units. We trained with sparse categorical cross-entropy and the Adam optimiser [@kingma2015] for 10 epochs with batches of 128.
+
+```{r}
+#| label: task2-leakage
+# Checking for leakage using random split
+set.seed(123)
+idx <- sample(nrow(x))
+rand_train <- idx[1:15000]
+rand_val   <- idx[15001:20000]
+
+x_tr_rand <- x[rand_train, , , , drop = FALSE]
+y_tr_rand <- y_person[rand_train]
+x_va_rand <- x[rand_val, , , , drop = FALSE]
+y_va_rand <- y_person[rand_val]
+
+model_rand <- keras_model_sequential(input_shape = c(28, 28, 1)) |>
+  layer_conv_2d(filters = 32, kernel_size = 3, activation = "relu") |>
+  layer_max_pooling_2d(pool_size = 2) |>
+  layer_conv_2d(filters = 64, kernel_size = 3, activation = "relu") |>
+  layer_max_pooling_2d(pool_size = 2) |>
+  layer_flatten() |>
+  layer_dense(units = 64, activation = "relu") |>
+  layer_dropout(rate = 0.3) |>
+  layer_dense(units = 20, activation = "softmax")
+
+model_rand |> compile(
+  loss = "sparse_categorical_crossentropy",
+  optimizer = "adam",
+  metrics = "accuracy"
+)
+
+history_rand <- model_rand |> fit(
+  x_tr_rand, y_tr_rand,
+  epochs = 10,
+  batch_size = 128,
+  validation_data = list(x_va_rand, y_va_rand),
+  verbose = 2
+)
+```
+
 ```{r}
 #| label: task2-evaluate
 # Accuracy by digit
@@ -494,12 +527,32 @@ meta_test <- meta[test_rows, ]
 
 acc_by_digit_test <- tapply(pred_class_test == y_test, meta_test$digit, mean)
 acc_by_digit_test
+
+# Results in a table
+results_table <- data.frame(
+  Digit = 0:4,
+  Validation = round(100 * as.numeric(acc_by_digit), 1),
+  Test = round(100 * as.numeric(acc_by_digit_test), 1)
+)
+
+knitr::kable(results_table,
+             col.names = c("Digit", "Validation accuracy (%)", "Test accuracy (%)"),
+             caption = "Table 1: Accuracy by digit on Validation and test sets"
+)
 ```
+
+**What the measures capture.** Accuracy is the proportion of images assigned to the right writer. In practice it answers: of the pages we receive from known writers in a new session, how many do we attribute to the right person? Chance is 1/20 = 5%, because the 20 writers are equally represented. The confusion matrix shows which writers are mistaken for which, that is, whose handwriting looks alike to the model. Accuracy by digit asks how much writer information a single digit carries, which matters when an examiner only has one kind of character to work with.
+
+**Performance by digit.**
+
+Table 1 shows the validation and test accuracy for each digit using the 1000 images per digit from session 5. The highest accuracy (68,4%) in the test set can be observed to be digit 3, and the lowest accuracy (54,8%) is digit 2 in the test set, with a variation of 13.6 percentage points. Each digit is way above the expected 5% from identifying among 20 writers, therefore, each digit contains information about who wrote it.
+
+The results are similar in the validation set (session 5) in that the highest accuracy (67.9%) was achieved by digit 3. The lowest accuracy (48.6), however, was achieved by digit 0 in session 4. Most digits changed by a few points, with digit 0 by almost 10. The top two digits (3 and 1) remained the same in both sets. The least three changed order, therefore, the variation among them is not reliable. In this run, all digits carry writer information over the 5%, with digit 3 bearing the most of it.
 
 ```{r}
 #| label: task2-stats
 #| include: false
-# ADDED: statistics behind the CNN results
+# Statistics behind the CNN results
 set.seed(2026)
 B <- 2000
 correct <- pred_class_test == y_test
@@ -656,6 +709,8 @@ The random split is the contrast that matters. The same network reached 99.5% va
 Accuracy was similar across digits (55.5% to 69.6%), with digit 3 highest at 69.6%. The cluster-bootstrap intervals for the five digits overlap almost completely (@fig-t2-digit, @tbl-t2-digit), and a Friedman test across digits with writers as blocks gives chi-squared = `r f2(unname(fr2$statistic), 2)` on `r unname(fr2$parameter)` df, p `r fp(fr2$p.value)` (Kendall's W = `r f2(w2)`). The data therefore give little support for saying that some digits identify writers better than others, and the digit 3 result should be treated as a hint at most.
 
 The errors are concentrated in particular writers more than in particular digits (@fig-t2-writer, @fig-t2-confusion). The clearest case is writer 10: 240 of that writer's 250 test images (96%) were assigned to writer 2 (@tbl-t2-confusions). Writer 5 was mistaken for writer 13 in 72% of cases, and writer 13 for writer 5 in 40%, so those two seem to write alike in session 5. The confusion matrix shows that this happens but not why, so we report it as an observation only.
+
+In real-world terms, evaluation measures how well the model performs when it is given a single digit written by one of the 20 known writers in a recording session it has not seen and it must identify who wrote it. In this case, the overall test accuracy is 59.5% means that out of 100 new digits of any kind from known writers, approximately 60 are assigned to the correct writer, and approximately 40 are assigned to the wrong one. This suggests that the model has learned the real writer information, although it would still make mistakes. Furthermore, the accuracy by digit indicates how useful each digit is, where higher accuracy highlights more of a writer’s individual style. However, the results does not show how the model would perform to writers it has not seen since it can only select among the 20 known writers. The results does not also show how it would handle real handwriting since the model was trained using simulated images.
 
 # 4. Siamese network
 
@@ -986,7 +1041,143 @@ The CNN and the Siamese network answer different questions. The CNN has to pick 
 
 # 5. Train, validation and test strategy
 
+For CNN, images were split by sessions, where sessions 1 to 3 were used for training (15000 images), session 4 for validation (5000 images) and session 5 for testing (5000 images). Each of the three sets contains the same number of images and digits for each writer. The training set was used for fitting the model, the validation set was used to evaluate model performance, and the test set was reserved and only used for the final model evaluation.
+
+The split by session approach was adopted since the images are identical to another since they were created under the same settings by the same writer, digit and session. If images were split at random, near-duplicates of the same handwriting would appear in both training and testing tests. The model would easily recognize what it had already seen and consequently, score it well. Splitting by session separates each group of near-copies on one side and the rest on the other side, therefore, the test set uses the images the model has never seen. This approach reflects a study done by @Roberts2017 where grouped data was split by group and not at random. As a result, sessions were chosen over writers given that a CNN must know every writer to identify them.
+
+The evaluation measures the model’s ability to identify a known writer on a new session. It does not measure the ability of a model to identify unknown writers, handwriting from different sources or writing with different materials.
+
+The same model was trained on a random split of the same size as a way of checking leakage. The model achieved a validation accuracy of approximately 54% versus the approximately 98% for the random split. Thus, the gap indicate the optimism of a random split which is persistent with the leakage from near-copy images. The results may be optimistic for any setting with unknown writers given that all 20 writers are both in training and testing sets, leading to possible leakage. Furthermore, the images are simulated, so it is highly possible that the real handwriting would be harder to identify. Moreover, all the results depends on session 5, therefore, different results may be obtained from another held-out session.
+
+For the Siamese network, images were split by writer before building pairs where writers 1 to 14 were used for training (8 000 pairs), 15 to 17 for validation (2 000 pairs) and 18 to 20 for testing (2 000 pairs). Pairs are built only inside one part, so no image or writer appears in more than one part. Because the aim is to compare people, testing on unseen writers is the appropriate kind of generalization to unseen writers and not to a new session for known writers as in the CNN. Before testing, the distance threshold was selected from the validation pairs.
+
+The Siamese network answers "a yes/ no match" questions compared to the CNN that is given a choice among 20 writers. The Siamese evaluation does not demonstrate how the network manages real handwriting, a bigger number of writers or pairs with different digits.
+
+The decision threshold (0.57) was selected on the validation pairs and fixed before testing, minimizing the pathways for leakage. Same-writer pairs from the same session were all accepted (200) against 89.8% of the 755 same-writer pairs from different sessions (p \< 0.001; Table[@session table]). Approximately 21% of the same-writer pairs share a session, the general balanced accuracy (0.931) is exaggerated by close to one percentage point compared to the value achieved in different session (0.922). The test pairs (2000) were generated from 2475 unique images produced by only three writers, indicating that intervals based on pairs underestimate the true uncertainty.
+
+The variation of balanced accuracy across the three test writers ranges between 0.903 and 0.96 (Table[@writer table]). The test score (0.931) is also higher than the validation score (0.879), which shows the writers represented in each set than to improved generalization. In addition, since the validation pairs were used for both early stopping and threshold selection, validation scores are somewhat optimistic. Lastly, because the images are simulated, and all image pairs contain the same digit, the model's performance may be lower on real-world handwriting or on pairs containing different digits.
+
 # 6. Hyperparameter optimisation
+
+```{r}
+set_random_seed(1)
+#model builder (base)
+build_cnn <- function(filters = 32, dropout = 0.3, lr = 0.001){
+  m <- keras_model_sequential(input_shape = c(28, 28, 1)) |>
+    layer_conv_2d(filters = filters, kernel_size = 3, activation = "relu") |>
+    layer_max_pooling_2d(pool_size = 2) |>
+    layer_conv_2d(filters = filters * 2, kernel_size = 3, activation = "relu") |>
+    layer_max_pooling_2d(pool_size = 2) |>
+    layer_flatten() |>
+    layer_dense(units = 64, activation = "relu") |>
+    layer_dropout(rate = dropout) |>
+    layer_dense(units = 20, activation = "softmax")
+  m |> compile(
+    loss = "sparse_categorical_crossentropy",
+    optimizer = optimizer_adam(learning_rate = lr),
+    metrics = "accuracy"
+  )
+  m
+}
+# varying 3 learning rates and 3 filter sizes = 9 model combinations 
+grid <- expand.grid(lr = c(0.0003, 0.001, 0.003),
+                    filters = c(16, 32, 64))
+is_base <- grid$lr == 0.001 & grid$filters == 32    
+epochs_used <- 10
+
+
+#modelling
+models <- vector("list", nrow(grid))
+
+for (g in seq_len(nrow(grid))){
+  if (is_base[g]){
+    models[[g]] <- model        #trained baseline CNN (learnin rate = 0.001) Task 2
+    next
+  }
+  set_random_seed(1)
+  models[[g]] <- build_cnn(filters = grid$filters[g], lr = grid$lr[g])
+  models[[g]] |> fit(x_train, y_train,
+                     epochs = epochs_used, batch_size = 128, verbose = 0)
+  cat("trained", g, "of", nrow(grid), "\n")
+}
+
+
+#validation accuracy overall and by digit, for every model
+meta_val  <- meta[val_rows, ]
+digit_acc <- matrix(NA, nrow(grid), 5,
+                    dimnames = list(NULL, paste0("Digit_", 0:4)))
+grid$val_acc <- NA
+
+for (g in seq_len(nrow(grid))){
+  pred_class <- max.col(models[[g]] |> predict(x_val, verbose = 0)) - 1L
+  correct    <- pred_class == y_val
+  grid$val_acc[g] <- round(100 * mean(correct), 1)
+  digit_acc[g, ]  <- round(100 * tapply(correct, meta_val$digit, mean), 1)
+}
+
+grid_digit <- cbind(grid, digit_acc)
+saveRDS(grid, "results/task5_grid.rds")
+saveRDS(grid_digit, "results/task5_grid_digit.rds")
+grid_digit
+
+
+#sensitivity
+range(grid$val_acc)                    
+diff(range(grid$val_acc))              # spread across all 9 settings
+
+tapply(grid$val_acc, grid$lr, mean)           # average by learning rate
+tapply(grid$val_acc, grid$filters, mean)      # average by number of filters
+
+
+#per-digit validation accuracy for the best model
+best <- which.max(grid$val_acc)
+grid[best, ]                                        
+
+pred_best  <- max.col(models[[best]] |> predict(x_val, verbose = 0)) - 1L
+acc_digit_best <- tapply(pred_best == y_val, meta[val_rows, ]$digit, mean)
+round(100 * acc_digit_best, 1)
+saveRDS(acc_digit_best, "results/task5_best_by_digit.rds")
+```
+
+Hyperparameter optimisation of the CNN model was conducted using the grid search which explores a predetermined combination of parameter values. Optimisation was conducted by varying three values of the learning rate as well as three values of the number of filters while keeping all other hyperparameters constant. The learning rate controls how fast the model can learn and process before updating the weights while the number of filters control how many features or patterns can the model extract @singh2025. The number of filters were varied at 16, 32 and 64 then the learning rates at 0.0003, 0.001 and 0.003. This grid search will give 9 combinations with varying learning rates and number of filters. The baseline CNN model from part 3, used a optimizer "adam" which has a default learning rate of 0.001 and the number of filters used was 32 in the 1st convulation layer and 64 in the 2nd. The sensiivity of the hyperparameters were measured using the overall validation accuracy and the per-digit validation accuracy as in task 2.
+
+```{r}
+#| label: tbl-hyper
+#| tbl-cap: "Overall validation accuracy (%) on session 4 for each combination of learning rate and number of filters, with row and column means. The baseline CNN uses a learning rate of 0.0010 and 32 filters."
+grid <- readRDS("results/task5_grid.rds")
+
+m <- tapply(grid$val_acc, list(grid$lr, grid$filters), mean)   # rows = learning rate, columns = filters
+m <- rbind(m, Mean = colMeans(m))                               # average over learning rates
+m <- cbind(m, Mean = rowMeans(m))                               # average over filter sizes (corner = overall mean)
+
+rownames(m)[1:3] <- sprintf("%.4f", as.numeric(rownames(m)[1:3])) 
+colnames(m)[1:3] <- paste(colnames(m)[1:3], "filters")
+
+knitr::kable(m, digits = 1, align = "cccc")
+```
+
+The best performing model was the combination of learning rate = 0.0003 and 64 filters with a validation accuracy of 53.7%. The worst performing was the model with learning rate of 0.003 and 64 filters with a validation accuracy of 48.4%. The difference between the two is 5.3%, which indicates that there is minimal changes and sensitivity to the changes. The averages of the learning rate across the 16, 32 and 64 filters is 53.07% (0.0003), 52.03% (0.0001) and 51.07% (0.003). The smaller the learning rate the higher the accuracy. The averages of the number of filters across the 3 learning rates is 51.77% (16), 52.80% (32) and 51.60% (64%). The accuracy is optimal at 32 and decreases with fewer filters and more filters. The average range for learning rate is 2% and 1.2% for number of filters suggesting that the learning rate may be more sensitive to accuracy compared to number of filters.
+
+```{r}
+#| label: tbl-hyper-digit
+#| tbl-cap: "Validation accuracy (%) on session 4, overall and by digit, for each combination of learning rate and number of filters. The last row is the mean across the nine settings."
+gd   <- readRDS("results/task5_grid_digit.rds")
+cols <- c("val_acc", paste0("Digit_", 0:4))
+
+tab <- data.frame(`Learning rate` = sprintf("%.4f", gd$lr),
+                  Filters = as.character(gd$filters),
+                  gd[, cols], check.names = FALSE)
+
+avg <- data.frame(`Learning rate` = "Mean", Filters = "all",
+                  t(colMeans(gd[, cols])), check.names = FALSE)
+
+tab <- rbind(tab, avg)
+names(tab)[3:8] <- c("Overall", paste("Digit", 0:4))
+
+knitr::kable(tab, digits = 1, align = rep("c", 8), row.names = FALSE)
+```
+
+On @tbl-hyper-digit, the digit with the worst average accuracy is digit 4 at 46.1% indicating that the digit had less information or features that the models could learn to accurately distinguish the writers (writers had a similar style for digit 4). The digit with the best average accuracy is digit 3 with an average accuracy of 57.8% meaning that it carries the most writer information.
 
 # 7. Comparison and discussion
 
