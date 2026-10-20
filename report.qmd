@@ -4,9 +4,13 @@ author:
   - name: "Karabo Matje"
   - name: "Innocentia Nemukula"
   - name: "Ludwick Hlongwane"
+
+output-file: index.html
+
 bibliography: references.bib
 csl: apa.csl
 link-citations: true
+
 format:
   html:
     toc: true
@@ -21,6 +25,7 @@ format:
     fig-dpi: 150
     fig-cap-location: bottom
     tbl-cap-location: top
+
   pdf:
     toc: true
     toc-depth: 3
@@ -34,6 +39,7 @@ format:
     fontsize: 10pt
     colorlinks: true
     echo: false
+
 execute:
   warning: false
   message: false
@@ -1380,7 +1386,6 @@ The Siamese network shows the same effect more precisely. All `r ss$n[1]` same-w
 The data are simulated, the CNN result rests on one held-out session, and the Siamese result rests on three writers. Each model was trained once with a fixed seed, so seed-to-seed variation was not measured. The nine tuning settings spanned `r f1(spread_pts)` percentage points, and with 5 000 validation images the binomial standard error of an accuracy near `r f1(mean(grid$val_acc))`% is about `r f1(se_val)` points before dependence is allowed for, so differences of one or two points between settings should not be interpreted. The two models were also not compared on the same footing. A fairer test would score both on the same pairs, for example by using the CNN's hidden layer as an embedding.
 
 In summary, a CNN trained on sessions 1 to 3 identified the writer in `r pc(test_acc)` of the images from a new session, far above the 5% chance level but well below its training accuracy. A Siamese network separated same-writer from different-writer pairs of unseen writers with a balanced accuracy of `r f3(bal_hat)`. Digit `r top_dg` carried the most writer information, but the differences between digits were small. A change of session lowered performance in both models, mainly by making the same writer look like a different one.
-
 
 # Appendices
 
