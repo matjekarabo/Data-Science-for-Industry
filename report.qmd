@@ -1,61 +1,124 @@
-get--- title: "STA5073Z Assignment 2: Writer identification from handwritten digits" subtitle: "Working draft: Tasks 1 to 3 (later sections to follow)" author: "Group members: add names here" bibliography: references.bib csl: apa.csl link-citations: true format: html: toc: true toc-depth: 3 number-sections: true embed-resources: true code-fold: true code-summary: "Show code" code-tools: true fig-width: 7 fig-height: 4.2 fig-dpi: 150 fig-cap-location: bottom tbl-cap-location: top execute: warning: false message: false ---
+---
+title: "STA5073Z Assignment 2: Writer identification from handwritten digits"
+author:
+  - name: "Karabo Matje"
+  - name: "Innocentia Nemukula"
+  - name: "Ludwick Hlongwane"
+bibliography: references.bib
+csl: apa.csl
+link-citations: true
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+    code-fold: true
+    code-summary: "Show code"
+    code-tools: true
+    fig-width: 7
+    fig-height: 4.2
+    fig-dpi: 150
+    fig-cap-location: bottom
+    tbl-cap-location: top
+  pdf:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    fig-width: 7
+    fig-height: 4.2
+    fig-dpi: 150
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    geometry: margin=2.2cm
+    fontsize: 10pt
+    colorlinks: true
+    echo: false
+execute:
+  warning: false
+  message: false
+---
 
 ```{r}
 #| label: setup
 #| include: false
-# One-off set-up: installs missing packages and points R at one clean Python
-# environment for Keras (this avoids reticulate's "Failed to inspect Python" error).
-Sys.setenv(RETICULATE_USE_MANAGED_VENV = "no")
 
+#Reproducibility switches
+Sys.setenv(TF_DETERMINISTIC_OPS  = "1",
+           TF_ENABLE_ONEDNN_OPTS = "0",
+           PYTHONHASHSEED        = "0")
+
+Sys.setenv(RETICULATE_USE_MANAGED_VENV = "yes")
+Sys.unsetenv("RETICULATE_PYTHON")
+
+#Install / update R packages
 pkgs <- c("keras3", "tensorflow", "reticulate", "ggplot2")
 missing_pkgs <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_pkgs)) install.packages(missing_pkgs, repos = "https://cloud.r-project.org")
 
-venv_name <- "r-keras"
-if (!reticulate::virtualenv_exists(venv_name)) {
-  local_app <- Sys.getenv("LOCALAPPDATA")
-  candidates <- c(
-    file.path(local_app, "Programs", "Python", c("Python311", "Python312", "Python313"), "python.exe"),
-    "C:/Program Files/Python311/python.exe", "C:/Program Files/Python312/python.exe",
-    "C:/Program Files/Python313/python.exe",
-    "/usr/local/bin/python3.11", "/usr/local/bin/python3.12",
-    "/opt/homebrew/bin/python3.11", "/opt/homebrew/bin/python3.12",
-    Sys.which("python3"), Sys.which("python")
-  )
-  candidates <- candidates[nzchar(candidates) & file.exists(candidates)]
-  candidates <- candidates[!grepl("WindowsApps", candidates, fixed = TRUE)]   # Windows Store stub
-  if (!length(candidates)) stop("No Python found. Install Python 3.11.9 from python.org, then render again.")
-  reticulate::virtualenv_create(venv_name, python = candidates[1])
-  reticulate::virtualenv_install(venv_name, c("tensorflow", "keras"))
+if (packageVersion("reticulate") < "1.41") {
+  install.packages("reticulate", repos = "https://cloud.r-project.org")
 }
-Sys.setenv(RETICULATE_PYTHON = reticulate::virtualenv_python(venv_name))
 
+# Declare Python requirements BEFORE loading keras3
+reticulate::py_require(
+  packages       = c("tensorflow==2.16.1", "keras==3.3.3", "numpy<2"),
+  python_version = "3.12"
+)
+
+# Now load keras3 
 library(keras3)
 use_backend("tensorflow")
 
+# Deterministic TensorFlow configuration
+det_status <- c(op_determinism = FALSE, single_thread = FALSE)
+
+det_status[["op_determinism"]] <- tryCatch({
+  tensorflow::tf$config$experimental$enable_op_determinism()
+  TRUE
+}, error = function(e) FALSE)
+
+det_status[["single_thread"]] <- tryCatch({
+  tensorflow::tf$config$threading$set_intra_op_parallelism_threads(1L)
+  tensorflow::tf$config$threading$set_inter_op_parallelism_threads(1L)
+  TRUE
+}, error = function(e) FALSE)
+
+# One‑call seed for R, NumPy, Python and TensorFlow
+seed_all <- function(seed = 1L) {
+  set.seed(seed)
+  keras3::set_random_seed(seed)
+}
+
+# Plotting helpers
 library(ggplot2)
-# Colour-blind-safe palette (Okabe-Ito) and one plain theme for every figure
-okabe <- c(blue = "#0072B2", orange = "#E69F00", green = "#009E73", red = "#D55E00", grey = "#7F7F7F")
+okabe <- c(blue = "#0072B2", orange = "#E69F00", green = "#009E73",
+           red = "#D55E00", grey = "#7F7F7F")
 theme_set(theme_bw(base_size = 11) +
-  theme(panel.grid.minor = element_blank(),
-        plot.caption = element_text(colour = "grey30", size = 8, hjust = 0),
-        legend.position = "bottom"))
+            theme(panel.grid.minor = element_blank(),
+                  plot.caption = element_text(colour = "grey30", size = 8, hjust = 0),
+                  legend.position = "bottom"))
 
-# Helpers used when reporting numbers
-pc <- function(v, d = 1) paste0(formatC(100 * v, format = "f", digits = d), "%")
-f2 <- function(v, d = 2) formatC(v, format = "f", digits = d)
-options(knitr.kable.NA = "-")   # show "-" instead of NA in tables
-fp <- function(p) if (p < 1e-16) "< 1e-16" else paste("=", formatC(p, format = "e", digits = 1))
+# Formatting helpers
+pc  <- function(v, d = 1) paste0(formatC(100 * v, format = "f", digits = d), "%")
+pc0 <- function(v, d = 1) sub("\\.0+%$", "%", pc(v, d))
+f1  <- function(v) formatC(v, format = "f", digits = 1)
+f2  <- function(v, d = 2) formatC(v, format = "f", digits = d)
+f3  <- function(v) formatC(v, format = "f", digits = 3)
+sp  <- function(v) format(v, big.mark = " ", scientific = FALSE, trim = TRUE)
+join_and <- function(x) if (length(x) > 1) paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)]) else as.character(x)
+options(knitr.kable.NA = "-")
+fp <- function(p) if (p < 1e-16) "< 1e-16" else paste("=", formatC(p, format = "g", digits = 2))
 
-# Find the data whether it sits in data/ or next to this file
+# Data path
 data_path <- if (file.exists("data/handwriting.rds")) "data/handwriting.rds" else "handwriting.rds"
 ```
 
-# 1. Introduction
+# Introduction
 
-Handwriting is individual enough that examiners routinely use it to judge who wrote a document. @srihari2002 analysed samples from 1,500 writers and reported that a statistical model could tell, with about 96% confidence, whether two handwriting samples came from the same writer. Deep learning has since been applied to the same problem. Convolutional neural networks (CNNs), whose use for digit recognition was established by @lecun1998, have been used to identify writers from images of their handwriting [@fiel2015; @xing2016]. Deciding whether two samples share an author can instead be treated as a similarity-learning problem. @bromley1993 introduced the "Siamese" architecture for signature verification, in which two inputs pass through the same network with shared weights and are compared in the output space. This report seeks to use two neural network models (CNN and Siamese) for writer identification of simulated digit images.
+Handwriting is personal, and examiners have long used it to judge who wrote a document. Reviews of writer identification describe how the field moved from hand-made features to machine learning and, more recently, deep learning [@rehman2019]. Convolutional neural networks (CNNs) learn features straight from the pixels and have been used to identify writers from images of their handwriting [@he2019; @gu2018]. A second route treats the problem as similarity learning: instead of naming the writer, a Siamese network judges whether two samples came from the same hand, so it can be applied to writers it has not seen [@chicco2021]. This report builds both models on simulated images of the digits 0 to 4 written by 20 writers. We explore the data (Task 1), fit a CNN that identifies the writer (Task 2), fit a Siamese network that verifies whether two images share a writer (Task 3), explain how the data were split and how leakage was avoided (Task 4), tune the CNN (Task 5) and compare the two models (Task 6).
 
-# 2. Data exploration
+# Data exploration {#sec-task1}
 
 ```{r}
 #| label: task1-load
@@ -81,7 +144,7 @@ dir.create("results", showWarnings = FALSE)
 
 # Draw one image from its row number
 draw_image <- function(i){
-  m <- data$images[i, , , 1]
+  m <- x[i, , , 1]
   image(t(m[28:1, ]), col = gray.colors(256, start = 1, end = 0),
         axes = FALSE, asp = 1)
 }
@@ -142,73 +205,61 @@ plot_replicates <- function(d, s = 1, n_people = 10,
 }
 ```
 
-## 2.1 Data Overview
+## Data Overview
 
-The data consisted of 25,000 greyscale images of 28 x 28 pixels, showing the digits 0 to 4. Each of the 20 writers wrote each digit 50 times (replicate) in each of the 5 sessions, giving a total of 1,250 images per writer. The original pixel values \[0,255\], were scaled to \[0, 1\] before fitting the neural network models, because scaling the pixel values creates a stable foundation for gradient optimisation @afzali2026. The metadata contains the image ID, writer ID, digit, session number and replicate number. To explore the sources of variability in the data, four analyses were carried out including variation between writers, variation across sessions for a subset of writers, variation within sessions (across replicates) for a subset of writers, and a quantitative comparison of the three using pixel distances.
+The data consisted of 25,000 greyscale images of 28 x 28 pixels, showing the digits 0 to 4. Each of the 20 writers wrote each digit 50 times (replicate) in each of the 5 sessions, giving a total of 1,250 images per writer. The original pixel values \[0,255\], were scaled to \[0, 1\] before fitting the neural network models, because inputs on a small common scale make gradient-based training more stable [@goodfellow2016; @chollet2022]. The metadata contains the image ID, writer ID, digit, session number and replicate number. To explore the sources of variability in the data, four analyses were carried out including variation between writers, variation across sessions for a subset of writers, variation within sessions (across replicates) for a subset of writers, and a quantitative comparison of the three using pixel distances.
 
-## 2.2 Variation between writers
+## Variation between writers
 
-To examine variation between writers, each digit was plotted for all 20 writers, with session and replicate fixed at 1. This produced five plots, one per digit. @williams2019 states that no two people's handwriting can ever be the same: they may have a similar style but they will differ in the characteristics of their handwriting. Variability that distinguishes one person's handwriting from another's was therefore assessed using characteristics such as size, shape and slant. @fig-writers shows clear differences in handwriting style between the 20 writers.
+To examine variation between writers, each digit was plotted for all 20 writers, with session and replicate fixed at 1. This produced five plots, one per digit. Writer-identification methods rely on the fact that people differ in features such as size, shape and slant [@rehman2019], so we looked for these features. @fig-writers shows clear differences in handwriting style between the 20 writers.
 
 ```{r}
 #| label: fig-writers
-#| fig-cap: "[Digits 0 (a) and 1 (b) for all 20 writers, with session 1 and replicate 1 fixed.]"
+#| fig-cap: "Digits 0 and 1 for all 20 writers, with session 1 and replicate 1 fixed."
+#| fig-subcap:
+#|   - "Digit 0"
+#|   - "Digit 1"
 #| fig-width: 10
 #| fig-height: 5.5
-plot_writers(c(0, 1))
+plot_writers(0)
+plot_writers(1)
 ```
 
-Variation in shape is most clearly observed in digits 0 and 1 (@fig-writers). For example, although all the 1s have a base, some have a hook at the top (writers 1, 7 and 14), while others have a curved body that resembles the digit 2 (writers 3, 9 and 17). For digit 0, shapes vary from circular to oval. The remaining digits follow a more consistent style, with the primary differences being slant and size. Size also varies whereby some writers (3 and 9) write small and compact digits, while others fill the space with large digits. Slant varies from upright to a rightward slant (writers 18 and 10), while writer 19 slants to the left. These differences in size, shape and slant are features that the models could learn for writer identification, although some digits may reveal more information than others. Digits 0 and 1, which show more shape variation across writers, may provide stronger information for distinguishing between writers than digits 2, 3 and 4, whose shapes are more uniform.
+Variation in shape is most clearly observed in digits 0 and 1 (@fig-writers). For example, although all the 1s have a base, some have a hook at the top (writers 1, 7 and 14), while others have a curved body that resembles the digit 2 (writers 3, 9 and 17). For digit 0, shapes vary from round to oval, and some writers (10, 12, 13 and 19) draw squarer shapes with a flat top. The remaining digits follow a more consistent style, with the primary differences being slant and size. Size also varies whereby some writers (3 and 9) write small and compact digits, while others fill the space with large digits. Slant varies from upright to a rightward slant (writers 18 and 10), while writer 19 slants to the left. These differences in size, shape and slant are features that the models could learn. The plots for digits 2, 3 and 4 are in @fig-app-writers (Appendix A).
 
-## 2.3 Variation across sessions
+## Variation across sessions
 
-To assess whether a person's handwriting changes between sessions, 10 writers were randomly sampled and each digit was plotted across the 5 sessions, with the replicate fixed at 1.
+To assess whether a person's handwriting changes between sessions, 10 writers were randomly sampled and each digit was plotted across the 5 sessions, with the replicate fixed at 1. The plots for digits 2, 3 and 4 are in @fig-app-sessions (Appendix A).
 
 ```{r}
 #| label: fig-sessions
-#| fig-cap: "[Digits 1 (a) and 0 (b) for ten randomly sampled writers (seed 1), with replicate 1 fixed. Rows are writers and columns are sessions 1 to 5.]"
+#| fig-cap: "Digits 1 and 0 for ten randomly sampled writers (seed 1), with replicate 1 fixed. Rows are writers and columns are sessions 1 to 5."
+#| fig-subcap:
+#|   - "Digit 1"
+#|   - "Digit 0"
 #| fig-width: 9
 #| fig-height: 10
-plot_sessions_sample(c(1, 0))
+plot_sessions_sample(1)
+plot_sessions_sample(0)
 ```
 
-```{r}
-#| label: save-sessions
-#| include: false
-for (d in 0:4){
-  png(sprintf("results/sessions_digit_%d.png", d), width = 700, height = 1000)
-  plot_sessions_sample(d)
-  invisible(dev.off())
-}
-```
+There are visible changes in style between sessions, and these are more noticeable for some writers than for others. Although some changes are noticeable, some writers remained consistent in certain characteristics. For example, writer 3 wrote small digits in all sessions and, for digit 1, kept their signature hook in every session, as writer 17 did. Other writers changed their characteristic style, for example, writer 19 slanted the digits slightly to the left in the first session, but the digits became more upright as the sessions progressed. Writer 1's 1s also changed between sessions because some have hooks and the lengths of the strokes differ. This indicates that a writer's handwriting may change between sessions. Although some of these changes are minor, they alter a writer's characteristic style from session 1, so the models may identify some writers less accurately in a new session.
 
-There are visible changes in style between sessions, and these are more noticeable for some digits than others, such as 0 and 1. Although some changes are noticeable, some writers remained consistent in certain characteristics. For example, writer 3 wrote small digits in all sessions and, for digit 1, kept their signature hook in every session, as writer 17 did. Other writers changed their characteristic style, for example, writer 19 slanted the digits slightly to the left in the first session, but the digits became more upright as the sessions progressed. Writer 1's 1s also changed between sessions because some have hooks and the lengths of the strokes differ. This indicates that a writer's handwriting may change between sessions. Although some of these changes are minor, they alter a writer's characteristic style from session 1, so the models may identify some writers less accurately in a new session.
-
-## 2.4 Variation across replicates
+## Variation across replicates
 
 ```{r}
 #| label: fig-replicates
-#| fig-cap: "[Same ten writers as the sessions figure, session 1 fixed, replicates 1, 11, 21, 31 and 41.]"
+#| fig-cap: "Digit 1 for the same ten writers as in the sessions figure, with session 1 fixed and replicates 1, 11, 21, 31 and 41. Rows are writers and columns are replicates."
 #| fig-width: 6
 #| fig-height: 8
 plot_replicates(1)
 ```
 
-```{r}
-#| label: save-replicates
-#| include: false
-for (d in 0:4){
-  png(sprintf("results/replicates_digit_%d.png", d), width = 700, height = 1000)
-  plot_replicates(d)
-  invisible(dev.off())
-}
-```
+To assess whether handwriting style drifted across replicates within a session, the same 10 writers were used, with replicates 1, 11, 21, 31 and 41 plotted for session 1 (fixed). The digits were near-identical across the replicates, with little to no change in style. This indicates that a writer's handwriting within one session is usually the same. The plots for digits 0, 2, 3 and 4 are in @fig-app-replicates (Appendix A).
 
-To assess whether handwriting style drifted across replicates within a session, the same 10 writers were used, with replicates 1, 11, 21, 31 and 41 plotted for session 1 (fixed). The digits were near-identical across the replicates, with little to no change in style. This indicates that a writers handwriting within one session is usually the same.
+## Quantifying the variation
 
-## 2.5 Quantifying the variation
-
-To quantify the variation between writers, across sessions and within sessions, the euclidean distance between two images was computed over all 784 pixels. For a sample of 1,000 draws, the function picked a writer, a digit, two sessions and two replicates and formed three comparisons with the digit matched within a session (comparing replicates), across sessions (the same writer) and between writers. The three distances were compared using a Friedman test @friedman1937, followed by the paired Wilcoxon signed-rank tests @wilcoxon1945 adjusted with the Holm's method @holm1979. The paired effect size d~z~ was also reported, and defined as the mean paired difference divided by the standard deviation of the differences @lakens2013. Intervals are percentile bootstrap intervals from the 2000 resamples of the draws @efron1979.
+To quantify the variation between writers, across sessions and within sessions, the Euclidean distance between two images was computed over all 784 pixels. For a sample of 1,000 draws, the function picked a writer, a digit, two sessions and two replicates and formed three comparisons with the digit matched within a session (comparing replicates), across sessions (the same writer) and between writers. The three distances were compared with a Friedman test, followed by paired Wilcoxon signed-rank tests with Holm's adjustment for the three comparisons. We also report the paired effect size d~z~, the mean of the paired differences divided by their standard deviation [@goulet2018]. Intervals are percentile bootstrap intervals from 2000 resamples of the draws [@efron2016].
 
 ```{r}
 #| label: task1-distances
@@ -251,10 +302,6 @@ results$type <- factor(results$type,
 ```{r}
 #| label: task1-stats
 #| include: false
-# Helpers used by the inline numbers in the text
-f2 <- function(x, d = 2) formatC(x, format = "f", digits = d)
-fp <- function(p) if (p < 1e-16) "< 1e-16" else paste("=", signif(p, 2))
-
 # rows = draws; the 3 distances of a draw are matched
 M <- matrix(results$dist, ncol = 3, byrow = TRUE,
             dimnames = list(NULL, c("Within", "Across", "Between")))
@@ -290,9 +337,20 @@ ratio_by_digit <- do.call(rbind, lapply(0:4, function(dg) {
              Ratio = mean(a) / mean(w),
              CI_low = unname(quantile(bs, .025)), CI_high = unname(quantile(bs, .975)))
 }))
+
+# Numbers quoted in the text
+holm_txt <- if (all(pw$p_Holm < 1e-16)) "p < 1e-16" else
+  sprintf("p between %s and %s", formatC(min(pw$p_Holm), format = "g", digits = 2),
+          formatC(max(pw$p_Holm), format = "g", digits = 2))
+frac_session <- (desc$Mean[2] - desc$Mean[1]) / (desc$Mean[3] - desc$Mean[1])
+rd <- ratio_by_digit
+hi_r <- which.max(rd$Ratio); lo_r <- which.min(rd$Ratio)
+ratio0 <- rd$Ratio[rd$Digit == 0]
+rank0 <- rank(-rd$Ratio)[rd$Digit == 0]
+ord_word <- c("first", "second", "third", "fourth", "fifth")
 ```
 
-Two images of the same digit by the same writer in the same session were near identical (mean distance = 2.72, SD = 0.50), which indicates that the 50 replicates are near copies of one another. The across session of the same writer has a mean distance of 7.15 and SD = 1.63. The highest variation was recorded between the different writers (mean distance = 8.59, SD = 1.14) (\@tbl_t1_desc, @fig-tl-dist). The three distances differ clearly in the matched draws (Friedman chi-squared = `r f2(unname(fr$statistic), 1)` on `r unname(fr$parameter)` df, p `r fp(fr$p.value)`; Kendall’s W = `r f2(kendall_w)`), and all three Holm-adjusted pairwise tests give p \< 1e-16 (\@tbl-t1-tests).
+Two images of the same digit by the same writer in the same session were near identical (mean distance = `r f2(desc$Mean[1])`, SD = `r f2(desc$SD[1])`), which indicates that the 50 replicates are near copies of one another. The across-session distance for the same writer had a mean of `r f2(desc$Mean[2])` and SD = `r f2(desc$SD[2])`. The highest variation was recorded between different writers (mean distance = `r f2(desc$Mean[3])`, SD = `r f2(desc$SD[3])`) (@tbl-t1-desc, @fig-t1-dist). The three distances differ clearly in the matched draws (Friedman chi-squared = `r f2(unname(fr$statistic), 1)` on `r unname(fr$parameter)` df, p `r fp(fr$p.value)`; Kendall’s W = `r f2(kendall_w)`), and all three Holm-adjusted pairwise tests give `r holm_txt` (@tbl-t1-tests).
 
 ```{r}
 #| label: tbl-t1-desc
@@ -311,7 +369,7 @@ boxplot(M, names = c("Within-session", "Across-session", "Between-writer"),
         ylab = "Pixel distance")
 ```
 
-With 1,000 draws almost any difference would be significant, so the effect sizes are more informative than the p-values. The across-session minus within-session gap is 4.43 (95% CI 4.33 to 4.53; \$d_z\$ = 2.72), whereas the between-writer minus across-session gap is only 1.44 (95% CI 1.33 to 1.56; \$d_z\$ = 0.77). In practical terms, a change of session moves a writer’s digit about three quarters of the way to where a different writer’s digit sits ((7.15 − 2.72) / (8.59 − 2.72)). A writer is therefore only partly recognisable from the pixels of a single image, and any model has to cope with the same person looking different from one session to the next.
+With 1,000 draws almost any difference would be significant, so the effect sizes are more informative than the p-values. The across-session minus within-session gap is `r f2(pw$Mean_diff[1])` (95% CI `r f2(pw$CI_low[1])` to `r f2(pw$CI_high[1])`; d~z~ = `r f2(pw$d_z[1])`), whereas the between-writer minus across-session gap is only `r f2(pw$Mean_diff[3])` (95% CI `r f2(pw$CI_low[3])` to `r f2(pw$CI_high[3])`; d~z~ = `r f2(pw$d_z[3])`). In practical terms, a change of session moves a writer’s digit about `r pc(frac_session, 0)` of the way to where a different writer’s digit sits ((`r f2(desc$Mean[2])` − `r f2(desc$Mean[1])`) / (`r f2(desc$Mean[3])` − `r f2(desc$Mean[1])`)). A writer is therefore only partly recognisable from the pixels of a single image, and any model has to cope with the same person looking different from one session to the next.
 
 ```{r}
 #| label: tbl-t1-tests
@@ -325,7 +383,7 @@ tab_tests <- data.frame(
 knitr::kable(tab_tests, align = "lccc")
 ```
 
-The ratio of across-session to within-session distance was above 1 for every digit, and its confidence interval never came near 1 (\@fig-t1-ratio, \@tbl-t1-ratio). It was highest for digit 1 (3.40; within-session distance 2.01) and lowest for digit 4 (2.36). Digit 1 is a thin stroke, so a small shift in position or slant changes which pixels are lit, which is a plausible reason for its larger ratio, although this was not tested. \[One sentence on where digit 0 ranks.\] Pixel distance is a crude measure, because a small shift in a digit’s position can inflate the distance between two images of the same shape, so these numbers describe the data and do not by themselves show how well a model can separate writers.
+The ratio of across-session to within-session distance was above 1 for every digit, and its confidence interval never came near 1 (@fig-t1-ratio, @tbl-t1-ratio). It was highest for digit `r rd$Digit[hi_r]` (`r f2(rd$Ratio[hi_r])`; within-session distance `r f2(rd$Within[hi_r])`) and lowest for digit `r rd$Digit[lo_r]` (`r f2(rd$Ratio[lo_r])`). Digit 1 is a thin stroke, so a small shift in position or slant changes which pixels are lit, which is a plausible reason for its larger ratio, although this was not tested. Digit 0 ranked `r ord_word[rank0]` of the five digits (ratio `r f2(ratio0)`). Pixel distance is a crude measure, because a small shift in a digit’s position can inflate the distance between two images of the same shape, so these numbers describe the data and do not by themselves show how well a model can separate writers.
 
 ```{r}
 #| label: tbl-t1-ratio
@@ -359,19 +417,23 @@ abline(h = 1, lty = 2)
 
 This has a consequence for how the data are split in the next tasks. A random split would put near-copies of the same image in both the training and the test set, so it would measure memory more than generalisation.
 
-# 3. Convolutional Neural Network (CNN)
+# Convolutional Neural Network (CNN)
 
 Task 2 treats writer identification as a 20-class classification problem: the input is an image and the output is the writer's ID. All 20 writers appear in the training data, so this is identification of known writers, not verification of unknown ones.
 
-**Uncertainty.** The 50 replicates within a writer, digit and session are near copies, so images are not independent and a binomial interval treats the test set as holding more information than it does. We report the exact Clopper–Pearson interval [@clopper1934] for reference, but base our uncertainty on a cluster bootstrap. Whole writer–digit groups (100 in the test session, 20 per digit) are resampled with replacement and the accuracy is recomputed 2000 times [@efron1979; @field2007]. Differences between digits are tested with a Friedman test over writers [@friedman1937], using each writer's accuracy on each digit as the unit.
+**Uncertainty.** The 50 replicates within a writer, digit and session are near copies, so images are not independent and a binomial interval treats the test set as holding more information than it does. We report the exact Clopper-Pearson interval for reference [@agresti2019], but base our uncertainty on a cluster bootstrap: whole writer-digit groups (100 in the test session, 20 per digit) are resampled with replacement and the accuracy is recomputed 2000 times, which keeps the dependence inside each group [@efron2016; @saravanan2020]. Differences between digits are tested with a Friedman test, using each writer's accuracy on each digit as the unit and the writers as blocks.
 
 ```{r}
 #| label: task2-split
-# (Task 2 code as written by the group; data is already loaded above.)
-set.seed(1); set_random_seed(1)   # ADDED: makes the training reproducible
+# Free memory 
+if (exists("x_flat")) rm(x_flat)
+invisible(gc())
+seed_all(1)  
 
 x <- data$images / 255
 y_person <- data$metadata$person_id - 1L
+data$images <- NULL   # the raw images are not needed again 
+invisible(gc())
 
 # Splitting data by session. Session 1-3 for training, session 4 for validation and session 5 for testing
 
@@ -395,11 +457,13 @@ y_test <- y_person[test_rows]
 
 ```
 
-**Split.** We split by session: sessions 1 to 3 for training (15 000 images), session 4 for validation and session 5 for testing (5 000 images each). This asks whether a model trained on a person's earlier writing recognises them in a later session, and it stops near-identical replicates (@sec-task1) from straddling the training and test sets. Random splitting of records that share a source is known to give optimistic results: random cross-validation on structured data underestimates predictive error because the dependence between records is ignored [@roberts2017], and @saeb2017 make the same case for subject-wise versus record-wise validation. As a check, we also trained the same model on a random split (15 000 images for training, 5 000 for validation).
+**Split.** We split by session: sessions 1 to 3 for training (15 000 images), session 4 for validation and session 5 for testing (5 000 images each). This asks whether a model trained on a person's earlier writing recognises them in a later session, and it stops near-identical replicates (@sec-task1) from straddling the training and test sets. Random splitting of records that share a source is known to give optimistic results: random cross-validation on structured data underestimates predictive error because the dependence between records is ignored [@roberts2017], and @saeb2017 make the same case for subject-wise versus record-wise validation. Leakage between training and test data is a wider cause of over-optimistic results in machine-learning studies [@kapoor2023]. As a check, we also trained the same model on a random split (15 000 images for training, 5 000 for validation).
 
 ```{r}
 #| label: task2-cnn
+#| output: false
 # CNN Model building
+seed_all(1)   # fixed start weights, dropout masks and batch order for the baseline CNN
 model <- keras_model_sequential(input_shape = c(28, 28, 1)) |>
   layer_conv_2d(filters = 32, kernel_size = 3, activation = "relu") |> #keeps positive signals only
   layer_max_pooling_2d(pool_size = 2) |>       #shrinks the image by half
@@ -422,12 +486,13 @@ history <- model |> fit(
   epochs = 10,
   batch_size = 128,
   validation_data = list(x_val, y_val),
-  verbose = 2   # ADDED: one line per epoch keeps the rendered report tidy
+  verbose = 2   # one line per epoch keeps the rendered report tidy
 )
 ```
 
 ```{r}
 #| label: task2-leakage
+#| output: false
 # Checking for leakage using random split
 set.seed(123)
 idx <- sample(nrow(x))
@@ -439,6 +504,7 @@ y_tr_rand <- y_person[rand_train]
 x_va_rand <- x[rand_val, , , , drop = FALSE]
 y_va_rand <- y_person[rand_val]
 
+seed_all(1)   # same seed as the baseline CNN, so the two models differ only in the split
 model_rand <- keras_model_sequential(input_shape = c(28, 28, 1)) |>
   layer_conv_2d(filters = 32, kernel_size = 3, activation = "relu") |>
   layer_max_pooling_2d(pool_size = 2) |>
@@ -455,7 +521,6 @@ model_rand |> compile(
   metrics = "accuracy"
 )
 
-# FIX: the original used x_tr_r / y_tr_r / x_va_r / y_va_r, which do not exist.
 # The objects defined above are x_tr_rand / y_tr_rand / x_va_rand / y_va_rand.
 history_rand <- model_rand |> fit(
   x_tr_rand, y_tr_rand,
@@ -464,50 +529,16 @@ history_rand <- model_rand |> fit(
   validation_data = list(x_va_rand, y_va_rand),
   verbose = 2
 )
+
+# The random-split copies of the images are no longer needed
+rm(x_tr_rand, x_va_rand); invisible(gc())
 ```
 
-**Model.** The CNN has two convolution and max-pooling blocks (32 and then 64 filters of size 3 × 3, following the convolution–pooling design of @lecun1998) with rectified linear activations [@nair2010], a flatten layer, a dense layer of 64 units with 30% dropout, which randomly removes units during training to reduce overfitting [@srivastava2014], and a softmax output of 20 units. We trained with sparse categorical cross-entropy and the Adam optimiser [@kingma2015] for 10 epochs with batches of 128.
-
-```{r}
-#| label: task2-leakage
-# Checking for leakage using random split
-set.seed(123)
-idx <- sample(nrow(x))
-rand_train <- idx[1:15000]
-rand_val   <- idx[15001:20000]
-
-x_tr_rand <- x[rand_train, , , , drop = FALSE]
-y_tr_rand <- y_person[rand_train]
-x_va_rand <- x[rand_val, , , , drop = FALSE]
-y_va_rand <- y_person[rand_val]
-
-model_rand <- keras_model_sequential(input_shape = c(28, 28, 1)) |>
-  layer_conv_2d(filters = 32, kernel_size = 3, activation = "relu") |>
-  layer_max_pooling_2d(pool_size = 2) |>
-  layer_conv_2d(filters = 64, kernel_size = 3, activation = "relu") |>
-  layer_max_pooling_2d(pool_size = 2) |>
-  layer_flatten() |>
-  layer_dense(units = 64, activation = "relu") |>
-  layer_dropout(rate = 0.3) |>
-  layer_dense(units = 20, activation = "softmax")
-
-model_rand |> compile(
-  loss = "sparse_categorical_crossentropy",
-  optimizer = "adam",
-  metrics = "accuracy"
-)
-
-history_rand <- model_rand |> fit(
-  x_tr_rand, y_tr_rand,
-  epochs = 10,
-  batch_size = 128,
-  validation_data = list(x_va_rand, y_va_rand),
-  verbose = 2
-)
-```
+**Model.** The CNN has two convolution and max-pooling blocks (32 and then 64 filters of size 3 × 3), which learn local stroke patterns and then combine them [@goodfellow2016; @gu2018]. These are followed by rectified linear activations, a flatten layer, a dense layer of 64 units with 30% dropout (which randomly switches off units during training to reduce overfitting) and a softmax output of 20 units [@goodfellow2016]. We trained with sparse categorical cross-entropy and the Adam optimiser for 10 epochs with batches of 128 [@goodfellow2016; @chollet2022].
 
 ```{r}
 #| label: task2-evaluate
+#| output: false
 # Accuracy by digit
 pred  <- model |> predict(x_val, verbose = 0)
 pred_class <- max.col(pred) - 1L
@@ -534,20 +565,39 @@ results_table <- data.frame(
   Validation = round(100 * as.numeric(acc_by_digit), 1),
   Test = round(100 * as.numeric(acc_by_digit_test), 1)
 )
-
-knitr::kable(results_table,
-             col.names = c("Digit", "Validation accuracy (%)", "Test accuracy (%)"),
-             caption = "Table 1: Accuracy by digit on Validation and test sets"
-)
 ```
 
-**What the measures capture.** Accuracy is the proportion of images assigned to the right writer. In practice it answers: of the pages we receive from known writers in a new session, how many do we attribute to the right person? Chance is 1/20 = 5%, because the 20 writers are equally represented. The confusion matrix shows which writers are mistaken for which, that is, whose handwriting looks alike to the model. Accuracy by digit asks how much writer information a single digit carries, which matters when an examiner only has one kind of character to work with.
+```{r}
+#| label: tbl-t2-valtest
+#| tbl-cap: "Accuracy by digit on the validation (session 4) and test (session 5) sets."
+knitr::kable(results_table,
+             col.names = c("Digit", "Validation accuracy (%)", "Test accuracy (%)"))
+```
+
+**What the measures capture.** Accuracy is the proportion of images assigned to the right writer. Chance is 1/20 = 5%, because the 20 writers are equally represented. The confusion matrix shows which writers are mistaken for which, that is, whose handwriting looks alike to the model. Accuracy by digit asks how much writer information a single digit carries.
 
 **Performance by digit.**
 
-Table 1 shows the validation and test accuracy for each digit using the 1000 images per digit from session 5. The highest accuracy (68,4%) in the test set can be observed to be digit 3, and the lowest accuracy (54,8%) is digit 2 in the test set, with a variation of 13.6 percentage points. Each digit is way above the expected 5% from identifying among 20 writers, therefore, each digit contains information about who wrote it.
+```{r}
+#| label: task2-digit-text
+#| include: false
+# Numbers for the "Performance by digit" paragraph (all from results_table)
+rt <- results_table
+hi_t <- rt$Digit[which.max(rt$Test)];       lo_t <- rt$Digit[which.min(rt$Test)]
+hi_v <- rt$Digit[which.max(rt$Validation)]; lo_v <- rt$Digit[which.min(rt$Validation)]
+top2_t <- sort(rt$Digit[order(rt$Test, decreasing = TRUE)[1:2]])
+top2_v <- sort(rt$Digit[order(rt$Validation, decreasing = TRUE)[1:2]])
+top2_txt <- if (identical(top2_t, top2_v))
+  sprintf("The two highest digits (%s) were the same in both sets.", join_and(top2_t)) else
+  sprintf("The two highest digits differed between the sets (test: %s; validation: %s).", join_and(top2_t), join_and(top2_v))
+chg <- abs(rt$Test - rt$Validation)
+low3_t <- rt$Digit[order(rt$Test)[1:3]]
+low3_spread <- diff(range(rt$Test[match(low3_t, rt$Digit)]))
+```
 
-The results are similar in the validation set (session 5) in that the highest accuracy (67.9%) was achieved by digit 3. The lowest accuracy (48.6), however, was achieved by digit 0 in session 4. Most digits changed by a few points, with digit 0 by almost 10. The top two digits (3 and 1) remained the same in both sets. The least three changed order, therefore, the variation among them is not reliable. In this run, all digits carry writer information over the 5%, with digit 3 bearing the most of it.
+@tbl-t2-valtest shows the validation (session 4) and test (session 5) accuracy for each digit, using 1 000 images per digit in each session. On the test set the highest accuracy (`r f1(max(rt$Test))`%) was for digit `r hi_t` and the lowest (`r f1(min(rt$Test))`%) was for digit `r lo_t`, a difference of `r f1(max(rt$Test) - min(rt$Test))` percentage points. Every digit is far above the 5% expected by chance when identifying among 20 writers, so each digit contains information about who wrote it.
+
+On the validation set the highest accuracy (`r f1(max(rt$Validation))`%) was for digit `r hi_v` and the lowest (`r f1(min(rt$Validation))`%) was for digit `r lo_v`. Between the two sets, accuracy for the digits changed by `r f1(min(chg))` to `r f1(max(chg))` percentage points, with the largest change for digit `r rt$Digit[which.max(chg)]`. `r top2_txt` The three lowest digits on the test set (`r join_and(low3_t)`) lie within `r f1(low3_spread)` percentage points of each other, so their order is not reliable. In this run all digits carry writer information above chance. Digit `r hi_t` had the highest test accuracy, although the differences between digits are not statistically reliable (see below).
 
 ```{r}
 #| label: task2-stats
@@ -610,6 +660,30 @@ off <- unclass(cm); diag(off) <- 0
 top <- head(order(off, decreasing = TRUE), 5)
 top_conf <- data.frame(True_writer = row(off)[top] , Predicted_as = col(off)[top], Images = off[top],
                        Share_of_true_writers_images = off[top] / rowSums(unclass(cm))[row(off)[top]])
+```
+
+```{r}
+#| label: task2-numbers
+#| include: false
+# Every number quoted in the Task 2 text comes from the objects below
+train_acc    <- last(history$metrics$accuracy)
+val_acc_last <- last(history$metrics$val_accuracy)
+val_acc_rng  <- range(history$metrics$val_accuracy)
+val_loss_1   <- history$metrics$val_loss[1]
+val_loss_end <- last(history$metrics$val_loss)
+rand_val_acc <- last(history_rand$metrics$val_accuracy)
+test_acc     <- k_test / n_test
+gap_pts      <- 100 * (rand_val_acc - test_acc)
+best_digit   <- digit_stats$Digit[which.max(digit_stats$Accuracy)]
+tc1 <- top_conf[1, ]
+n_per_writer <- unname(rowSums(unclass(cm))[tc1$True_writer])
+tc2 <- top_conf[2, ]
+rev_share <- unname(off[tc2$Predicted_as, tc2$True_writer] / rowSums(unclass(cm))[tc2$Predicted_as])
+second_txt <- sprintf("Writer %d was mistaken for writer %d in %s of cases, and writer %d for writer %d in %s, %s.",
+                      tc2$True_writer, tc2$Predicted_as, pc(tc2$Share_of_true_writers_images, 0),
+                      tc2$Predicted_as, tc2$True_writer, pc(rev_share, 0),
+                      if (rev_share >= 0.2) "so those two seem to write alike in session 5"
+                      else "so this confusion runs mostly in one direction")
 ```
 
 ## Results
@@ -702,35 +776,35 @@ knitr::kable(top_conf, digits = 3, row.names = FALSE,
 
 ## What Task 2 tells us
 
-The CNN fitted the training sessions almost perfectly (98.7% accuracy after 10 epochs) but identified the writer correctly in only 59.3% of the test images from the unseen session 5 (@tbl-t2-summary). The exact Clopper-Pearson interval is 57.9% to 60.7%, but this treats the 5 000 images as independent, which they are not. The cluster bootstrap, which resamples whole writer-digit groups, gives a much wider interval of 50.3% to 67.8% [@field2007], so the honest statement is that test accuracy is roughly 50% to 68%. Either way it is far above the 5% expected by chance, and far below the training accuracy. The learning curves show where the gap comes from (@fig-t2-curves). Validation accuracy stays between about 46% and 55% from the first epoch, while the validation loss rises from 1.79 to 4.44 as the training loss falls. The network is becoming more confident without becoming more correct on a new session, which is what overfitting looks like. We did not use early stopping here, so the test result is for the model after 10 epochs.
+The CNN fitted the training sessions almost perfectly (`r pc(train_acc)` accuracy after 10 epochs) but identified the writer correctly in only `r pc(test_acc)` of the test images from the unseen session 5 (@tbl-t2-summary). The exact Clopper-Pearson interval is `r pc(cp_all[1])` to `r pc(cp_all[2])`, but this treats the 5 000 images as independent, which they are not. The cluster bootstrap, which resamples whole writer-digit groups, gives a much wider interval of `r pc(boot_all[1])` to `r pc(boot_all[2])` [@saravanan2020], so the honest statement is that test accuracy is roughly `r pc(boot_all[1], 0)` to `r pc(boot_all[2], 0)`. Either way it is far above the 5% expected by chance, and far below the training accuracy. The learning curves show where the gap comes from (@fig-t2-curves). Validation accuracy stays between about `r pc(val_acc_rng[1], 0)` and `r pc(val_acc_rng[2], 0)` from the first epoch, while the validation loss rises from `r f2(val_loss_1)` to `r f2(val_loss_end)` as the training loss falls. The network is becoming more confident without becoming more correct on a new session, which is what overfitting looks like [@goodfellow2016]. We did not use early stopping here, so the test result is for the model after 10 epochs.
 
-The random split is the contrast that matters. The same network reached 99.5% validation accuracy within ten epochs when the images were shuffled across training and validation. That near-perfect score is not evidence of a better model. It is the leakage that Task 1 predicted, because the validation images have near-copies in the training set (the within-session distance was only 2.72). The gap of about 40 points between the random split (99.5%) and the session-split test (59.3%) shows how much a random split would have overstated performance [@roberts2017; @saeb2017].
+The random split is the contrast that matters. The same network reached `r pc(rand_val_acc)` validation accuracy within ten epochs when the images were shuffled across training and validation. That near-perfect score is not evidence of a better model. It is the leakage that Task 1 predicted, because the validation images have near-copies in the training set (the within-session distance was only `r f2(desc$Mean[1])`). The gap of about `r round(gap_pts)` points between the random split (`r pc(rand_val_acc)`) and the session-split test (`r pc(test_acc)`) shows how much a random split would have overstated performance [@roberts2017; @saeb2017].
 
-Accuracy was similar across digits (55.5% to 69.6%), with digit 3 highest at 69.6%. The cluster-bootstrap intervals for the five digits overlap almost completely (@fig-t2-digit, @tbl-t2-digit), and a Friedman test across digits with writers as blocks gives chi-squared = `r f2(unname(fr2$statistic), 2)` on `r unname(fr2$parameter)` df, p `r fp(fr2$p.value)` (Kendall's W = `r f2(w2)`). The data therefore give little support for saying that some digits identify writers better than others, and the digit 3 result should be treated as a hint at most.
+Accuracy was similar across digits (`r pc(min(digit_stats$Accuracy))` to `r pc(max(digit_stats$Accuracy))`), with digit `r best_digit` highest at `r pc(max(digit_stats$Accuracy))`. The cluster-bootstrap intervals for the five digits overlap almost completely (@fig-t2-digit, @tbl-t2-digit), and a Friedman test across digits with writers as blocks gives chi-squared = `r f2(unname(fr2$statistic), 2)` on `r unname(fr2$parameter)` df, p `r fp(fr2$p.value)` (Kendall's W = `r f2(w2)`). The data therefore give little support for saying that some digits identify writers better than others, and the digit `r best_digit` result should be treated as a hint at most.
 
-The errors are concentrated in particular writers more than in particular digits (@fig-t2-writer, @fig-t2-confusion). The clearest case is writer 10: 240 of that writer's 250 test images (96%) were assigned to writer 2 (@tbl-t2-confusions). Writer 5 was mistaken for writer 13 in 72% of cases, and writer 13 for writer 5 in 40%, so those two seem to write alike in session 5. The confusion matrix shows that this happens but not why, so we report it as an observation only.
+The errors are concentrated in particular writers more than in particular digits (@fig-t2-writer, @fig-t2-confusion). The clearest case is writer `r tc1$True_writer`: `r tc1$Images` of that writer’s `r n_per_writer` test images (`r pc(tc1$Share_of_true_writers_images, 0)`) were assigned to writer `r tc1$Predicted_as` (@tbl-t2-confusions). `r second_txt` We only report this as an observation, because the matrix shows that it happens but not why.
 
-In real-world terms, evaluation measures how well the model performs when it is given a single digit written by one of the 20 known writers in a recording session it has not seen and it must identify who wrote it. In this case, the overall test accuracy is 59.5% means that out of 100 new digits of any kind from known writers, approximately 60 are assigned to the correct writer, and approximately 40 are assigned to the wrong one. This suggests that the model has learned the real writer information, although it would still make mistakes. Furthermore, the accuracy by digit indicates how useful each digit is, where higher accuracy highlights more of a writer’s individual style. However, the results does not show how the model would perform to writers it has not seen since it can only select among the 20 known writers. The results does not also show how it would handle real handwriting since the model was trained using simulated images.
+In real-world terms, the model is given one digit from a known writer in a session it has not seen and must say who wrote it. The overall test accuracy of `r pc(test_acc)` means that, out of 100 new digits from known writers, about `r round(100 * test_acc)` are assigned to the right writer and about `r 100 - round(100 * test_acc)` to the wrong one, so the model has learned real writer information but still makes many mistakes. The results do not show how it would handle writers it has not seen, since it can only choose among the 20 known writers, or real handwriting, since the images are simulated.
 
-# 4. Siamese network
+# Siamese network
 
-Task 3 changes the question. Instead of naming the writer, the network judges whether two images were written by the same person, so it can be applied to writers it has never seen (verification instead of identification). We use a Siamese network [@bromley1993]: one encoder turns each image into a 16-number embedding, the same encoder (with shared weights) is applied to both images in a pair, and the model outputs the Euclidean distance between the two embeddings. The encoder has two convolution and max-pooling stages (16 and 32 filters), global average pooling and a dense layer of 16 units.
+Task 3 changes the question. Instead of naming the writer, the network judges whether two images were written by the same person, so it can be applied to writers it has never seen (verification instead of identification). We use a Siamese network [@chicco2021]: one encoder turns each image into a 16-number embedding, the same encoder (with shared weights) is applied to both images in a pair, and the model outputs the Euclidean distance between the two embeddings. The encoder has two convolution and max-pooling stages (16 and 32 filters), global average pooling and a dense layer of 16 units.
 
 **Training examples.** Positive pairs show the same writer and negative pairs show different writers, in roughly equal numbers. Both images in a pair show the same digit; otherwise the network could answer "different writer" whenever the digits differ, instead of comparing handwriting. We split by writer before building pairs: writers 1 to 14 for training (8 000 pairs), 15 to 17 for validation (2 000 pairs) and 18 to 20 for testing (2 000 pairs). Pairs are built only inside one part, so no image or writer appears in more than one part. Because the aim is to compare people, testing on unseen writers is the appropriate kind of generalisation.
 
-**Loss.** We use the contrastive loss of @hadsell2006. With $D$ the distance between the two embeddings, $y = 1$ for a same-writer pair and $m = 1$ the margin,
+**Loss.** We use the contrastive loss, which Siamese networks commonly use to learn distances [@chicco2021]. With $D$ the distance between the two embeddings, $y = 1$ for a same-writer pair and $m = 1$ the margin,
 
 $$L = y\,D^{2} + (1 - y)\,\max(0,\; m - D)^{2}.$$
 
-Same-writer pairs are pulled together, and different-writer pairs are pushed apart only while they are closer than the margin. @hadsell2006 write the same loss with the labels reversed (0 for similar pairs) and a factor of 1/2; we follow the convention of the course slides. We optimised with Adam and early stopping on the validation loss, keeping the best weights.
+Same-writer pairs are pulled together, and different-writer pairs are pushed apart only while they are closer than the margin. Some authors write the same loss with the labels reversed (0 for similar pairs); we follow the convention of the course slides. We optimised with Adam and early stopping on the validation loss, keeping the best weights.
 
-**Evaluation.** The network outputs a distance, so a decision rule is needed: a pair is called "same writer" if its distance is below a threshold. We chose the threshold on the validation pairs to maximise balanced accuracy, the mean of the true match rate and the true non-match rate [@brodersen2010], and then fixed it for the test pairs. Because one threshold is one operating point, we also report the ROC curve, which plots the true match rate against the false match rate over all thresholds [@fawcett2006], and the area under it (AUC), which is the probability that a randomly chosen same-writer pair has a smaller distance than a randomly chosen different-writer pair [@hanley1982]. Intervals are percentile bootstrap intervals over test pairs [@efron1979] and exact Clopper–Pearson intervals for rates [@clopper1934]. These intervals reflect the sampling of pairs only. The pairs reuse a small set of images from three writers, so we also report results for each test writer separately.
+**Evaluation.** The network outputs a distance, so a decision rule is needed: a pair is called "same writer" if its distance is below a threshold. We chose the threshold on the validation pairs to maximise balanced accuracy, the mean of the true match rate and the true non-match rate, which does not favour the more common pair type [@luque2019], and then fixed it for the test pairs. Because one threshold is one operating point, we also report the ROC curve, which plots the true match rate against the false match rate over all thresholds, and the area under it (AUC), the probability that a randomly chosen same-writer pair has a smaller distance than a randomly chosen different-writer pair. Intervals are percentile bootstrap intervals over test pairs [@efron2016] and exact Clopper-Pearson intervals for rates [@agresti2019]. These intervals reflect the sampling of pairs only. The pairs reuse a small set of images from three writers, so we also report results for each test writer separately.
 
 ## Pair construction
 
 ```{r}
 #| label: task3-pairs
-set.seed(1); set_random_seed(1)
+seed_all(1)   
 
 # 1. Split by WRITER first, so validation/test writers are never seen in training
 tr_ids <- which(meta$person_id %in% 1:14)
@@ -782,10 +856,10 @@ knitr::kable(comp, digits = 3, row.names = FALSE,
              col.names = c("Set", "Writers", "Pairs", "Share same-writer", "Same digit in every pair", "Distinct images"))
 ```
 
-## Shared encoder and Siamese model
-
 ```{r}
 #| label: task3-model
+#| output: false
+seed_all(1)   # fixed start weights and batch order for the Siamese network
 # 3. Shared encoder: the same layers (same weights) are used for both images
 img_in <- layer_input(shape = c(28, 28, 1))
 z <- img_in |>
@@ -799,11 +873,11 @@ encoder <- keras_model(img_in, z)
 # 4. Siamese model: output = Euclidean distance between the two embeddings
 left_in  <- layer_input(shape = c(28, 28, 1))
 right_in <- layer_input(shape = c(28, 28, 1))
-distance <- list(encoder(left_in), encoder(right_in)) |>
-  layer_lambda(f = function(z) {
-    op_sqrt(op_sum(op_square(z[[1]] - z[[2]]), axis = 2, keepdims = TRUE) + 1e-7)
-  })
+emb_left  <- encoder(left_in)
+emb_right <- encoder(right_in)
+distance  <- op_sqrt(op_sum(op_square(emb_left - emb_right), axis = 2, keepdims = TRUE) + 1e-7)
 siamese <- keras_model(list(left_in, right_in), distance)
+
 
 # 5. Contrastive loss with margin 1:
 #    same pairs (y = 1) are pulled together (loss D^2);
@@ -817,7 +891,6 @@ history_siam <- siamese |> fit(
   list(train$left, train$right), train$y,
   validation_data = list(list(valid$left, valid$right), valid$y),
   epochs = 12, batch_size = 64, verbose = 2,
-  # ADDED: stop when validation loss stops improving and keep the best weights
   callbacks = list(callback_early_stopping(monitor = "val_loss", patience = 2,
                                            restore_best_weights = TRUE))
 )
@@ -827,6 +900,7 @@ history_siam <- siamese |> fit(
 
 ```{r}
 #| label: task3-eval
+#| output: false
 # 6. Choose the distance threshold on VALIDATION pairs (not on test)
 valid_distance <- as.numeric(predict(siamese, list(valid$left, valid$right), verbose = 0))
 valid_same <- valid$y[, 1] == 1
@@ -862,7 +936,7 @@ table(truth = test_same, predicted = pred_same)
 ```{r}
 #| label: task3-stats
 #| include: false
-# ADDED: statistics behind the Siamese results
+# statistics behind the Siamese results
 set.seed(2026)
 B <- 1000
 n_pairs <- length(test_same)
@@ -929,6 +1003,19 @@ by_digit <- do.call(rbind, lapply(0:4, function(dg) {
   data.frame(Digit = dg, Pairs = length(ix), Bal_acc = bal_acc(test_distance[ix], test_same[ix], threshold),
              CI_low = unname(quantile(bs, .025)), CI_high = unname(quantile(bs, .975)))
 }))
+
+# Numbers quoted in the text
+val_bal    <- max(scores)
+tmr_hat    <- tmr_k / tmr_n
+tnr_hat    <- tnr_k / tnr_n
+bal_ci     <- unname(quantile(boot_t3[, "bal"], c(.025, .975)))
+auc_ci     <- unname(quantile(boot_t3[, "auc"], c(.025, .975)))
+best_ep    <- which.min(history_siam$metrics$val_loss)
+best_vloss <- min(history_siam$metrics$val_loss)
+stop_ep    <- length(history_siam$metrics$val_loss)
+ss <- sess_tab   # 1 same-writer/same-session, 2 same-writer/different-sessions, 3 different-writer/same-session, 4 different-writer/different-sessions
+share_same_session <- ss$n[1] / (ss$n[1] + ss$n[2])
+bal_diff_sess <- mean(c(ss$Rate[2], ss$Rate[4]))   # balanced accuracy on different-session pairs only
 ```
 
 ```{r}
@@ -1031,36 +1118,30 @@ ggplot(by_digit, aes(factor(Digit), Bal_acc)) +
 
 ## What Task 3 tells us
 
-On three writers the network never saw during training, the Siamese network separated same-writer from different-writer pairs well. At the distance threshold of 0.58 chosen on the validation pairs, balanced accuracy on the test pairs was 0.930 (95% bootstrap CI 0.917 to 0.941), with a true match rate of 0.931 and a true non-match rate of 0.929 (@tbl-t3-metrics, @tbl-t3-confusion). The AUC of 0.983 (95% CI 0.979 to 0.988) shows that the ranking of pairs by distance is good over all thresholds, not only at the one chosen (@fig-t3-roc, @fig-t3-dist; AUC is the probability that a random same-writer pair has a smaller distance than a random different-writer pair [@hanley1982; @fawcett2006]). Early stopping kept the weights from epoch 4 (validation loss 0.105) and stopped at epoch 6 (@fig-t3-loss). The test balanced accuracy is higher than the 0.877 seen on the validation pairs at the chosen threshold. With only three writers in each of the two sets, that difference could come from which writers happened to be in each set, so we do not read anything into it.
+On three writers the network never saw during training, the Siamese network separated same-writer from different-writer pairs well. At the distance threshold of `r f2(threshold)` chosen on the validation pairs, balanced accuracy on the test pairs was `r f3(bal_hat)` (95% bootstrap CI `r f3(bal_ci[1])` to `r f3(bal_ci[2])`), with a true match rate of `r f3(tmr_hat)` and a true non-match rate of `r f3(tnr_hat)` (@tbl-t3-metrics, @tbl-t3-confusion). The AUC of `r f3(auc_hat)` (95% CI `r f3(auc_ci[1])` to `r f3(auc_ci[2])`) shows that the ranking of pairs by distance is good over all thresholds, not only at the one chosen (@fig-t3-roc, @fig-t3-dist). Early stopping kept the weights from epoch `r best_ep` (validation loss `r f3(best_vloss)`) and stopped at epoch `r stop_ep` (@fig-t3-loss). The test balanced accuracy is `r ifelse(bal_hat > val_bal, "higher", "lower")` than the `r f3(val_bal)` seen on the validation pairs at the chosen threshold. With only three writers in each of the two sets, that difference could come from which writers happened to be in each set, so we do not read anything into it.
 
-Task 1 predicted that pairs from different sessions would be harder, and the session breakdown shows this for same-writer pairs (@tbl-t3-session). All 200 same-writer pairs from the same session were accepted (100%, exact CI 98.2% to 100%), against 91.3% (689 of 755) for same-writer pairs from different sessions (Fisher exact p = `r fp(p_same_writer_sessions)`). For different-writer pairs there was no clear session effect (91.4% against 93.2%, p = `r fp(p_diff_writer_sessions)`). In other words, the network is least sure when asked to connect two sessions of one person, which is the case the application cares about. The same-session figure of 100% is also not independent evidence, since those images are near-copies.
+Task 1 predicted that pairs from different sessions would be harder, and the session breakdown shows this for same-writer pairs (@tbl-t3-session). Of the `r ss$n[1]` same-writer pairs from the same session, `r ss$Correct[1]` were accepted (`r pc0(ss$Rate[1])`, exact CI `r pc0(ss$CI_low[1])` to `r pc0(ss$CI_high[1])`), against `r pc0(ss$Rate[2])` (`r ss$Correct[2]` of `r ss$n[2]`) for same-writer pairs from different sessions (Fisher exact p `r fp(p_same_writer_sessions)`). For different-writer pairs there was no clear session effect (`r pc0(ss$Rate[3])` against `r pc0(ss$Rate[4])`, p `r fp(p_diff_writer_sessions)`). In other words, the network is least sure when asked to connect two sessions of one person, which is the case the application cares about. The same-session figure is also not independent evidence, since those images are near-copies.
 
-Performance differed a little between the three test writers (balanced accuracy 0.960, 0.926 and 0.903 for writers 18, 19 and 20; @tbl-t3-writer), and between digits (@fig-t3-digit). With three writers and the pairs sharing images (2 000 test pairs use 2 475 distinct images, @tbl-t3-pairs), the intervals in @tbl-t3-metrics are likely to be too narrow, so they should be read as the lower bound on the uncertainty.
+Performance differed a little between the three test writers (balanced accuracy `r f3(by_writer$Bal_acc[1])`, `r f3(by_writer$Bal_acc[2])` and `r f3(by_writer$Bal_acc[3])` for writers 18, 19 and 20; @tbl-t3-writer), and between digits (@fig-t3-digit). With three writers and the pairs sharing images (2 000 test pairs use `r sp(comp$Distinct_images[3])` distinct images, @tbl-t3-pairs), the intervals in @tbl-t3-metrics are likely to be too narrow, so they should be read as the lower bound on the uncertainty.
 
-The CNN and the Siamese network answer different questions. The CNN has to pick one writer out of 20 (chance 5%) and was tested on the same writers in a new session, whereas the Siamese network makes a yes/no decision (chance 50%) on new writers. The two accuracy figures are therefore not directly comparable, and a fair comparison needs both models to be evaluated on the same footing, which we return to later in the report.
+# Train, validation and test strategy {#sec-strategy}
 
-# 5. Train, validation and test strategy
+For the CNN we split by session. Sessions 1 to 3 (15 000 images) were used for training, session 4 (5 000 images) for validation and session 5 (5 000 images) for testing, so each writer, digit and session group of 50 images sits in exactly one set. The training set fits the weights, the validation set is used to monitor and compare models, and the test set was used once, for the final result.
 
-For CNN, images were split by sessions, where sessions 1 to 3 were used for training (15000 images), session 4 for validation (5000 images) and session 5 for testing (5000 images). Each of the three sets contains the same number of images and digits for each writer. The training set was used for fitting the model, the validation set was used to evaluate model performance, and the test set was reserved and only used for the final model evaluation.
+We split by session and not at random because the 50 replicates of a writer, digit and session are near copies of each other (Task 1: mean within-session distance `r f2(desc$Mean[1])`). In a random split, near copies of the test images sit in the training set, so the model is rewarded for remembering and not for generalising. This is the leakage problem that is known for grouped data [@roberts2017; @kapoor2023]. Splitting by session keeps each group of copies on one side. We did not split by writer for the CNN, because a classifier with 20 output classes can only name writers it was trained on.
 
-The split by session approach was adopted since the images are identical to another since they were created under the same settings by the same writer, digit and session. If images were split at random, near-duplicates of the same handwriting would appear in both training and testing tests. The model would easily recognize what it had already seen and consequently, score it well. Splitting by session separates each group of near-copies on one side and the rest on the other side, therefore, the test set uses the images the model has never seen. This approach reflects a study done by @Roberts2017 where grouped data was split by group and not at random. As a result, sessions were chosen over writers given that a CNN must know every writer to identify them.
+We checked this with a random split of the same size. Validation accuracy was `r pc(val_acc_last)` on the session split and `r pc(rand_val_acc)` on the random split, so the random split overstated performance by about `r round(100 * (rand_val_acc - val_acc_last))` percentage points. The session-split results still have limits: all 20 writers are in the training data, the images are simulated, and everything rests on one test session, so another session could give a different accuracy.
 
-The evaluation measures the model’s ability to identify a known writer on a new session. It does not measure the ability of a model to identify unknown writers, handwriting from different sources or writing with different materials.
+For the Siamese network we split by writer before making pairs: writers 1 to 14 (8 000 pairs) for training, 15 to 17 (2 000 pairs) for validation and 18 to 20 (2 000 pairs) for testing. No writer or image appears in more than one set, so the test measures verification of unseen people, which is a different question from the CNN's. The threshold was chosen on the validation pairs and fixed before testing. The validation pairs were also used for early stopping, so the validation score (`r f3(val_bal)`) is slightly optimistic. The test score was `r f3(bal_hat)`, and the gap between the two most likely reflects which writers fell in each set, since each set has only a few writers.
 
-The same model was trained on a random split of the same size as a way of checking leakage. The model achieved a validation accuracy of approximately 54% versus the approximately 98% for the random split. Thus, the gap indicate the optimism of a random split which is persistent with the leakage from near-copy images. The results may be optimistic for any setting with unknown writers given that all 20 writers are both in training and testing sets, leading to possible leakage. Furthermore, the images are simulated, so it is highly possible that the real handwriting would be harder to identify. Moreover, all the results depends on session 5, therefore, different results may be obtained from another held-out session.
+Two features of the Siamese test need care. First, only `r pc(share_same_session, 0)` of the same-writer test pairs come from one session, but those pairs are near copies and were always accepted (`r ss$Correct[1]` of `r ss$n[1]`), which lifts the overall score. On different-session pairs alone the balanced accuracy was `r f3(bal_diff_sess)`, against `r f3(bal_hat)` overall. Second, the 2 000 test pairs reuse `r sp(comp$Distinct_images[3])` images from three writers, so pair-based intervals are too narrow, and the balanced accuracy ranged from `r f3(min(by_writer$Bal_acc))` to `r f3(max(by_writer$Bal_acc))` across the three writers (@tbl-t3-writer). Finally, because the images are simulated and each pair shows one digit, performance on real handwriting or on pairs of different digits may be lower.
 
-For the Siamese network, images were split by writer before building pairs where writers 1 to 14 were used for training (8 000 pairs), 15 to 17 for validation (2 000 pairs) and 18 to 20 for testing (2 000 pairs). Pairs are built only inside one part, so no image or writer appears in more than one part. Because the aim is to compare people, testing on unseen writers is the appropriate kind of generalization to unseen writers and not to a new session for known writers as in the CNN. Before testing, the distance threshold was selected from the validation pairs.
-
-The Siamese network answers "a yes/ no match" questions compared to the CNN that is given a choice among 20 writers. The Siamese evaluation does not demonstrate how the network manages real handwriting, a bigger number of writers or pairs with different digits.
-
-The decision threshold (0.57) was selected on the validation pairs and fixed before testing, minimizing the pathways for leakage. Same-writer pairs from the same session were all accepted (200) against 89.8% of the 755 same-writer pairs from different sessions (p \< 0.001; Table[@session table]). Approximately 21% of the same-writer pairs share a session, the general balanced accuracy (0.931) is exaggerated by close to one percentage point compared to the value achieved in different session (0.922). The test pairs (2000) were generated from 2475 unique images produced by only three writers, indicating that intervals based on pairs underestimate the true uncertainty.
-
-The variation of balanced accuracy across the three test writers ranges between 0.903 and 0.96 (Table[@writer table]). The test score (0.931) is also higher than the validation score (0.879), which shows the writers represented in each set than to improved generalization. In addition, since the validation pairs were used for both early stopping and threshold selection, validation scores are somewhat optimistic. Lastly, because the images are simulated, and all image pairs contain the same digit, the model's performance may be lower on real-world handwriting or on pairs containing different digits.
-
-# 6. Hyperparameter optimisation
+# Hyperparameter optimisation
 
 ```{r}
-set_random_seed(1)
+#| label: hyper-fit
+#| output: false
+seed_all(1)
 #model builder (base)
 build_cnn <- function(filters = 32, dropout = 0.3, lr = 0.001){
   m <- keras_model_sequential(input_shape = c(28, 28, 1)) |>
@@ -1091,10 +1172,10 @@ models <- vector("list", nrow(grid))
 
 for (g in seq_len(nrow(grid))){
   if (is_base[g]){
-    models[[g]] <- model        #trained baseline CNN (learnin rate = 0.001) Task 2
+    models[[g]] <- model        #trained baseline CNN (learning rate = 0.001) Task 2
     next
   }
-  set_random_seed(1)
+  seed_all(1)   # same seed for every grid model
   models[[g]] <- build_cnn(filters = grid$filters[g], lr = grid$lr[g])
   models[[g]] |> fit(x_train, y_train,
                      epochs = epochs_used, batch_size = 128, verbose = 0)
@@ -1116,6 +1197,7 @@ for (g in seq_len(nrow(grid))){
 }
 
 grid_digit <- cbind(grid, digit_acc)
+dir.create("results", showWarnings = FALSE)
 saveRDS(grid, "results/task5_grid.rds")
 saveRDS(grid_digit, "results/task5_grid_digit.rds")
 grid_digit
@@ -1139,7 +1221,7 @@ round(100 * acc_digit_best, 1)
 saveRDS(acc_digit_best, "results/task5_best_by_digit.rds")
 ```
 
-Hyperparameter optimisation of the CNN model was conducted using the grid search which explores a predetermined combination of parameter values. Optimisation was conducted by varying three values of the learning rate as well as three values of the number of filters while keeping all other hyperparameters constant. The learning rate controls how fast the model can learn and process before updating the weights while the number of filters control how many features or patterns can the model extract @singh2025. The number of filters were varied at 16, 32 and 64 then the learning rates at 0.0003, 0.001 and 0.003. This grid search will give 9 combinations with varying learning rates and number of filters. The baseline CNN model from part 3, used a optimizer "adam" which has a default learning rate of 0.001 and the number of filters used was 32 in the 1st convulation layer and 64 in the 2nd. The sensiivity of the hyperparameters were measured using the overall validation accuracy and the per-digit validation accuracy as in task 2.
+Hyperparameter optimisation of the CNN was done with a grid search, which tries every combination of a fixed set of values. Results can depend strongly on a few hyperparameters, which is why tuning is worth checking [@probst2019]; other search methods exist [@bischl2023], but a small grid was enough for this brief. Optimisation was conducted by varying three values of the learning rate as well as three values of the number of filters while keeping all other hyperparameters constant. The learning rate controls how fast the model can learn and process before updating the weights while the number of filters sets how many patterns each convolution layer can pick up [@goodfellow2016]. The number of filters was set to 16, 32 and 64 and the learning rate to 0.0003, 0.001 and 0.003, which gives 9 combinations. The baseline CNN from Section 3 used the Adam optimiser with its default learning rate of 0.001 and had 32 filters in the first convolution layer and 64 in the second. The sensitivity to the hyperparameters was measured using the overall validation accuracy and the per-digit validation accuracy as in task 2.
 
 ```{r}
 #| label: tbl-hyper
@@ -1156,7 +1238,50 @@ colnames(m)[1:3] <- paste(colnames(m)[1:3], "filters")
 knitr::kable(m, digits = 1, align = "cccc")
 ```
 
-The best performing model was the combination of learning rate = 0.0003 and 64 filters with a validation accuracy of 53.7%. The worst performing was the model with learning rate of 0.003 and 64 filters with a validation accuracy of 48.4%. The difference between the two is 5.3%, which indicates that there is minimal changes and sensitivity to the changes. The averages of the learning rate across the 16, 32 and 64 filters is 53.07% (0.0003), 52.03% (0.0001) and 51.07% (0.003). The smaller the learning rate the higher the accuracy. The averages of the number of filters across the 3 learning rates is 51.77% (16), 52.80% (32) and 51.60% (64%). The accuracy is optimal at 32 and decreases with fewer filters and more filters. The average range for learning rate is 2% and 1.2% for number of filters suggesting that the learning rate may be more sensitive to accuracy compared to number of filters.
+```{r}
+#| label: hyper-numbers
+#| include: false
+# Numbers for the hyperparameter text (all from the grid results)
+hb <- which.max(grid$val_acc); hw <- which.min(grid$val_acc)
+lr_best  <- sprintf("%.4f", grid$lr[hb]);  lr_worst <- sprintf("%.4f", grid$lr[hw])
+best_base_txt <- if (is_base[hb]) " (the baseline configuration)" else ""
+spread_pts <- diff(range(grid$val_acc))
+lr_means <- tapply(grid$val_acc, grid$lr, mean)          # 0.0003, 0.001, 0.003
+fl_means <- tapply(grid$val_acc, grid$filters, mean)     # 16, 32, 64
+lr_rng <- diff(range(lr_means)); fl_rng <- diff(range(fl_means))
+lr_trend_txt <- if (all(diff(lr_means) < 0)) "Accuracy fell as the learning rate rose." else
+  if (all(diff(lr_means) > 0)) "Accuracy rose as the learning rate rose." else
+  "Accuracy did not change steadily with the learning rate."
+fl_trend_txt <- if (which.max(fl_means) == 2)
+  "Accuracy was highest at 32 filters and lower with fewer and with more filters." else
+  sprintf("Accuracy was highest at %s filters.", names(fl_means)[which.max(fl_means)])
+sens_txt <- if (abs(lr_rng - fl_rng) < 0.5)
+  sprintf("The averages differ by %s points across learning rates and %s points across numbers of filters, so neither hyperparameter is clearly more influential.", f1(lr_rng), f1(fl_rng)) else
+  sprintf("The averages differ by %s points across learning rates and %s points across numbers of filters, which suggests that accuracy is more sensitive to %s.",
+          f1(lr_rng), f1(fl_rng), if (lr_rng > fl_rng) "the learning rate" else "the number of filters")
+gd_means <- colMeans(readRDS("results/task5_grid_digit.rds")[, paste0("Digit_", 0:4)])
+dig_lo <- which.min(gd_means) - 1L; dig_hi <- which.max(gd_means) - 1L
+# Extra numbers for the Section 6 text
+ov_mean <- mean(grid$val_acc); ov_sd <- sd(grid$val_acc)
+n_val_img <- length(y_val)
+se_pp <- 100 * sqrt(ov_mean / 100 * (1 - ov_mean / 100) / n_val_img)     # binomial SE if images were independent
+far_idx <- which(ov_mean - grid$val_acc > 3)
+standout_txt <- if (length(far_idx) == 1)
+  sprintf("Only the combination of a learning rate of %s with %s filters stands out, as the one setting more than 3 points below the mean.",
+          sprintf("%.4f", grid$lr[far_idx]), grid$filters[far_idx]) else
+  if (length(far_idx) == 0) "No setting stands out: none is more than 3 points below the mean." else
+  sprintf("%d settings are more than 3 points below the mean.", length(far_idx))
+sens_short <- if (abs(lr_rng - fl_rng) < 0.5) "so neither hyperparameter clearly dominates" else
+  sprintf("so accuracy was more sensitive to %s", if (lr_rng > fl_rng) "the learning rate" else "the number of filters")
+gd9 <- as.matrix(readRDS("results/task5_grid_digit.rds")[, paste0("Digit_", 0:4)])
+fr_set <- friedman.test(gd9)                                  # settings as blocks, digits as treatments
+w_set  <- unname(fr_set$statistic) / (nrow(gd9) * (ncol(gd9) - 1))
+d_ord  <- order(gd_means, decreasing = TRUE) - 1L             # digits from best to worst
+ord_cons <- if (fr_set$p.value < 0.05) "consistent" else "not consistent"
+stable_txt <- if (fr_set$p.value < 0.05) "a stable ordering and not independent replication" else "no stable ordering"
+```
+
+Overall validation accuracy ranged from `r f1(min(grid$val_acc))`% to `r f1(max(grid$val_acc))`% across the nine settings (mean `r f1(ov_mean)`%, SD `r f1(ov_sd)`; @tbl-hyper). The best setting was a learning rate of `r lr_best` with `r grid$filters[hb]` filters at `r f1(grid$val_acc[hb])`%`r best_base_txt`, and the worst was a learning rate of `r lr_worst` with `r grid$filters[hw]` filters at `r f1(grid$val_acc[hw])`%, a spread of `r f1(spread_pts)` percentage points. Averaged over the other hyperparameter, validation accuracy was `r f1(lr_means[1])`%, `r f1(lr_means[2])`% and `r f1(lr_means[3])`% for learning rates of 0.0003, 0.001 and 0.003, and `r f1(fl_means[1])`%, `r f1(fl_means[2])`% and `r f1(fl_means[3])`% for 16, 32 and 64 filters. The ranges of these averages are `r f1(lr_rng)` and `r f1(fl_rng)` percentage points, `r sens_short`. With `r sp(n_val_img)` validation images the binomial standard error of an accuracy near `r f1(ov_mean)`% is about `r f1(se_pp)` percentage points, and the images are clustered by writer, so the true uncertainty is larger and differences of one or two points between settings should not be interpreted. Each setting was trained once with the same seed. The size of the gain from tuning differs between hyperparameters and between data sets, which is why tuning effort is usually focused on the few that matter most [@probst2019]. `r standout_txt`
 
 ```{r}
 #| label: tbl-hyper-digit
@@ -1177,56 +1302,185 @@ names(tab)[3:8] <- c("Overall", paste("Digit", 0:4))
 knitr::kable(tab, digits = 1, align = rep("c", 8), row.names = FALSE)
 ```
 
-On @tbl-hyper-digit, the digit with the worst average accuracy is digit 4 at 46.1% indicating that the digit had less information or features that the models could learn to accurately distinguish the writers (writers had a similar style for digit 4). The digit with the best average accuracy is digit 3 with an average accuracy of 57.8% meaning that it carries the most writer information.
+In @tbl-hyper-digit, the mean validation accuracy over the nine settings was highest for digit `r d_ord[1]` (`r f1(gd_means[d_ord[1] + 1])`%) and digit `r d_ord[2]` (`r f1(gd_means[d_ord[2] + 1])`%) and lowest for digit `r d_ord[5]` (`r f1(gd_means[d_ord[5] + 1])`%) and digit `r d_ord[4]` (`r f1(gd_means[d_ord[4] + 1])`%). The order of the digits was `r ord_cons` across settings (Friedman chi-squared = `r f2(unname(fr_set$statistic), 1)` on `r unname(fr_set$parameter)` df, p `r fp(fr_set$p.value)`; Kendall's W = `r f2(w_set)`; settings as blocks). The nine models share the same data, so this shows `r stable_txt`.
 
-# 7. Comparison and discussion
+# Comparison and discussion {#sec-compare}
 
-# 8. Appendices
+```{r}
+#| label: compare-stats
+#| include: false
+# Numbers for the comparison (all from objects created in earlier chunks)
+gd7 <- readRDS("results/task5_grid_digit.rds")
+gm  <- as.matrix(gd7[, paste0("Digit_", 0:4)])        # 9 settings x 5 digits, validation accuracy (%)
+fr_grid <- friedman.test(gm)                          # settings as blocks, digits as treatments
+w_grid  <- unname(fr_grid$statistic) / (nrow(gm) * (ncol(gm) - 1))
+val9 <- colMeans(gm)
+rk <- cbind(CNN_test = rank(-digit_stats$Accuracy), CNN_val9 = rank(-val9), Siamese = rank(-by_digit$Bal_acc))
+rownames(rk) <- 0:4
+mean_rk <- rowMeans(rk)
+top_dg  <- names(which.min(mean_rk))
+rk_span <- apply(rk, 1, function(v) max(v) - min(v))
+move_dg <- names(which.max(rk_span))
+order_desc <- function(v) join_and((0:4)[order(v, decreasing = TRUE)])
+hi_s <- which.max(by_digit$Bal_acc) - 1L; lo_s <- which.min(by_digit$Bal_acc) - 1L
+gap_cnn  <- 100 * (train_acc - test_acc)
+drop_tmr <- 100 * (ss$Rate[1] - ss$Rate[2])
+inside_txt <- if (val_acc_last >= boot_all[1] && val_acc_last <= boot_all[2]) "inside" else "outside"
+se_val <- 100 * sqrt(mean(grid$val_acc) / 100 * (1 - mean(grid$val_acc) / 100) / length(y_val))
+```
 
-# 9. References
+## What the two models measure
+
+The CNN does identification: given one image it picks one of 20 known writers, so chance is 5%. The Siamese network does verification: given two images it decides whether one writer wrote both, so chance is 50%, and the test writers were never seen in training [@chicco2021]. The results in @tbl-compare-models therefore answer different questions and should not be ranked against each other. The CNN named the right writer for `r pc(test_acc)` of the session 5 images, about `r round(test_acc / 0.05)` times chance, and the Siamese network reached a balanced accuracy of `r f3(bal_hat)` with an AUC of `r f3(auc_hat)`. Choosing between two outcomes is easier than choosing among 20, so the higher Siamese score does not mean that it recognises writers better. The uncertainty also differs. The CNN interval comes from a cluster bootstrap that resamples writer-digit groups, which respects the dependence between near-copy images [@saravanan2020]. The Siamese intervals resample pairs that share images, so they are too narrow and are best read as a lower bound. The cluster bootstrap itself can be conservative when the data are closer to independent than assumed [@saravanan2020], so the CNN interval errs on the side of being too wide, which is the safer mistake here.
+
+```{r}
+#| label: tbl-compare-models
+#| tbl-cap: "Summary of the two models on their held-out data. CP: exact Clopper-Pearson interval."
+cmp_models <- data.frame(
+  Item = c("Question", "Held-out data", "Chance level", "Main result"),
+  CNN = c("Which of the 20 writers wrote this image?",
+          sprintf("Session 5, known writers (%s images)", sp(n_test)),
+          "0.05",
+          sprintf("Accuracy %.3f (CP %.3f to %.3f; cluster bootstrap %.3f to %.3f)", test_acc, cp_all[1], cp_all[2], boot_all[1], boot_all[2])),
+  Siamese = c("Did one writer write both images?",
+              sprintf("Writers 18 to 20, unseen (%s pairs)", sp(n_pairs)),
+              "0.50",
+              sprintf("Balanced accuracy %.3f (%.3f to %.3f); AUC %.3f (%.3f to %.3f)", bal_hat, bal_ci[1], bal_ci[2], auc_hat, auc_ci[1], auc_ci[2])))
+knitr::kable(cmp_models, row.names = FALSE, col.names = c("", "CNN (identification)", "Siamese network (verification)"))
+```
+
+## Which digits carry more writer information
+
+```{r}
+#| label: tbl-compare-digit
+#| tbl-cap: "Writer information by digit. CNN test accuracy (%) with 95% cluster-bootstrap interval; mean CNN validation accuracy (%) over the nine tuning settings; Siamese balanced accuracy on test pairs with 95% bootstrap interval; and the Task 1 ratio of across-session to within-session pixel distance."
+cmp <- data.frame(
+  Digit = 0:4,
+  cnn_test = sprintf("%.1f (%.1f to %.1f)", 100 * digit_stats$Accuracy, 100 * digit_stats$Boot_low, 100 * digit_stats$Boot_high),
+  cnn_val9 = sprintf("%.1f", val9),
+  siam     = sprintf("%.3f (%.3f to %.3f)", by_digit$Bal_acc, by_digit$CI_low, by_digit$CI_high),
+  ratio    = sprintf("%.2f", rd$Ratio))
+knitr::kable(cmp, row.names = FALSE, align = "ccccc",
+             col.names = c("Digit", "CNN test accuracy", "CNN validation, mean of 9 settings",
+                           "Siamese balanced accuracy", "Across / within distance"))
+```
+
+In Task 1 we expected digits 0 and 1, which vary most in shape (@sec-task1), to carry the most writer information. `r ifelse(top_dg %in% c("0", "1"), "The rankings broadly support this", "The rankings do not clearly support this")`: digit `r top_dg` ranked best on average, while digits 0 and 1 had mean ranks of `r f2(mean_rk[["0"]])` and `r f2(mean_rk[["1"]])`. @tbl-compare-digit puts the digit results side by side. From highest to lowest, the CNN test accuracy ranks the digits `r order_desc(digit_stats$Accuracy)`, the mean validation accuracy over the nine tuning settings ranks them `r order_desc(val9)`, and the Siamese balanced accuracy ranks them `r order_desc(by_digit$Bal_acc)`. After averaging the three ranks, digit `r top_dg` comes out best (mean rank `r f2(mean_rk[top_dg])`), and digit `r move_dg` is the least stable, moving over `r rk_span[move_dg]` places between the rankings. For the Siamese network, digit `r hi_s` scored highest (`r f3(by_digit$Bal_acc[hi_s + 1])`) and digit `r lo_s` lowest (`r f3(by_digit$Bal_acc[lo_s + 1])`), although the pairs are not independent, so these intervals are optimistic (@fig-t3-digit).
+
+The evidence that digits differ is weaker than the rankings suggest. For the CNN test accuracy, a Friedman test with writers as blocks gave chi-squared = `r f2(unname(fr2$statistic), 2)` on `r unname(fr2$parameter)` df, p `r fp(fr2$p.value)` (Kendall's W = `r f2(w2)`), and the bootstrap intervals overlap almost completely. Across the nine tuning settings the ordering of digits was more consistent (Friedman chi-squared = `r f2(unname(fr_grid$statistic), 1)` on `r unname(fr_grid$parameter)` df, p `r fp(fr_grid$p.value)`; W = `r f2(w_grid)`). However, those nine models share the same training and validation images, so this shows a stable ordering within one data set and not that it would reappear for new writers. The pixel distances of Task 1 did not predict the ranking either: digit `r rd$Digit[hi_r]` had the largest across-session to within-session ratio (`r f2(rd$Ratio[hi_r])`), yet it ranked `r ord_word[rk[as.character(rd$Digit[hi_r]), "CNN_test"]]` for CNN test accuracy and `r ord_word[rk[as.character(rd$Digit[hi_r]), "Siamese"]]` for the Siamese network. Taken together, digit `r top_dg` carried the most writer information in this data set, every digit carried far more than chance, and the differences between digits are small next to the differences between writers (@fig-t2-writer).
+
+## How a change of session affects performance
+
+Task 1 showed that a change of session moves a writer's digit about `r pc(frac_session, 0)` of the way towards another writer's digit, and both models paid for it. The CNN fitted its training sessions to `r pc(train_acc)` and the randomly split validation images to `r pc(rand_val_acc)`, where near copies were in the training set. On the new sessions it reached `r pc(val_acc_last)` (session 4) and `r pc(test_acc)` (session 5), a drop of about `r round(gap_cnn)` points from training. The session 4 accuracy lies `r inside_txt` the session 5 bootstrap interval, so the two held-out sessions cannot be told apart. The validation loss rose from `r f2(val_loss_1)` to `r f2(val_loss_end)` while the training loss fell, which is the usual sign of overfitting [@goodfellow2016].
+
+The Siamese network shows the same effect more precisely. All `r ss$n[1]` same-writer pairs from one session were accepted, against `r pc0(ss$Rate[2])` of the `r ss$n[2]` same-writer pairs from different sessions (Fisher exact p `r fp(p_same_writer_sessions)`; @tbl-t3-session). Different-writer pairs showed no clear session effect (`r pc0(ss$Rate[3])` against `r pc0(ss$Rate[4])`, p `r fp(p_diff_writer_sessions)`). A change of session therefore caused false rejections of the same writer and not false matches. The Fisher test treats pairs as independent, so its p-value is too small, but the gap is large. The drops (about `r round(gap_cnn)` points for the CNN and `r f1(drop_tmr)` points in the Siamese true match rate) cannot be compared directly because the tasks and writers differ. Their direction agrees with the evidence that testing on near copies of the training data overstates performance [@roberts2017; @saeb2017; @kapoor2023].
+
+## Limitations and summary
+
+The data are simulated, the CNN result rests on one held-out session, and the Siamese result rests on three writers. Each model was trained once with a fixed seed, so seed-to-seed variation was not measured. The nine tuning settings spanned `r f1(spread_pts)` percentage points, and with 5 000 validation images the binomial standard error of an accuracy near `r f1(mean(grid$val_acc))`% is about `r f1(se_val)` points before dependence is allowed for, so differences of one or two points between settings should not be interpreted. The two models were also not compared on the same footing. A fairer test would score both on the same pairs, for example by using the CNN's hidden layer as an embedding.
+
+In summary, a CNN trained on sessions 1 to 3 identified the writer in `r pc(test_acc)` of the images from a new session, far above the 5% chance level but well below its training accuracy. A Siamese network separated same-writer from different-writer pairs of unseen writers with a balanced accuracy of `r f3(bal_hat)`. Digit `r top_dg` carried the most writer information, but the differences between digits were small. A change of session lowered performance in both models, mainly by making the same writer look like a different one.
+
+
+# Appendices
+
+## Appendix A: Data exploration figures not shown in Section 2
+
+The main text shows digits 0 and 1 for the writer and session comparisons and digit 1 for the replicate comparison (@sec-task1). The figures below show the remaining digits with the same settings, so that all five digits are covered.
+
+```{r}
+#| label: fig-app-writers
+#| fig-cap: "Digits 2, 3 and 4 for all 20 writers, with session 1 and replicate 1 fixed."
+#| fig-subcap:
+#|   - "Digit 2"
+#|   - "Digit 3"
+#|   - "Digit 4"
+#| fig-width: 10
+#| fig-height: 5.5
+plot_writers(2)
+plot_writers(3)
+plot_writers(4)
+```
+
+```{r}
+#| label: fig-app-sessions
+#| fig-cap: "Digits 2, 3 and 4 for the same ten randomly sampled writers as in the sessions figure (seed 1), with replicate 1 fixed. Rows are writers and columns are sessions 1 to 5."
+#| fig-subcap:
+#|   - "Digit 2"
+#|   - "Digit 3"
+#|   - "Digit 4"
+#| fig-width: 9
+#| fig-height: 10
+plot_sessions_sample(2)
+plot_sessions_sample(3)
+plot_sessions_sample(4)
+```
+
+```{r}
+#| label: fig-app-replicates
+#| fig-cap: "Digits 0, 2, 3 and 4 for the same ten writers as in the sessions figure, with session 1 fixed and replicates 1, 11, 21, 31 and 41. Rows are writers and columns are replicates."
+#| fig-subcap:
+#|   - "Digit 0"
+#|   - "Digit 2"
+#|   - "Digit 3"
+#|   - "Digit 4"
+#| fig-width: 6
+#| fig-height: 8
+plot_replicates(0)
+plot_replicates(2)
+plot_replicates(3)
+plot_replicates(4)
+```
+
+# References
 
 ```{r}
 #| label: references-database
 #| include: false
-# Reference database for the citations above, kept here at the end of the file.
-# It is written to references.bib (and the APA style file is fetched) when the
-# document is rendered, so no extra files are needed next to the .qmd.
+
 bib <- r"---(
-@article{srihari2002,
-  author = {Srihari, Sargur N. and Cha, Sung-Hyuk and Arora, Hina and Lee, Sangjik},
-  title = {Individuality of handwriting},
-  journal = {Journal of Forensic Sciences},
-  volume = {47}, number = {4}, pages = {856--872}, year = {2002}
-}
-@article{lecun1998,
-  author = {LeCun, Yann and Bottou, L{\'e}on and Bengio, Yoshua and Haffner, Patrick},
-  title = {Gradient-based learning applied to document recognition},
-  journal = {Proceedings of the IEEE},
-  volume = {86}, number = {11}, pages = {2278--2324}, year = {1998}
-}
-@inproceedings{fiel2015,
-  author = {Fiel, Stefan and Sablatnig, Robert},
-  title = {Writer identification and retrieval using a convolutional neural network},
-  booktitle = {Computer Analysis of Images and Patterns (CAIP 2015)},
-  publisher = {Springer}, year = {2015}, doi = {10.1007/978-3-319-23117-4_3}
-}
-@inproceedings{xing2016,
-  author = {Xing, Linjie and Qiao, Yu},
-  title = {{DeepWriter}: A multi-stream deep {CNN} for text-independent writer identification},
-  booktitle = {2016 15th International Conference on Frontiers in Handwriting Recognition (ICFHR)},
+@book{goodfellow2016,
+  author = {Goodfellow, Ian and Bengio, Yoshua and Courville, Aaron},
+  title = {Deep learning},
+  publisher = {MIT Press},
   year = {2016}
 }
-@article{bromley1993,
-  author = {Bromley, Jane and Bentz, James W. and Bottou, L{\'e}on and Guyon, Isabelle and LeCun, Yann and Moore, Cliff and S{\"a}ckinger, Eduard and Shah, Roopak},
-  title = {Signature verification using a ``{S}iamese'' time delay neural network},
-  journal = {International Journal of Pattern Recognition and Artificial Intelligence},
-  volume = {7}, number = {4}, pages = {669--688}, year = {1993}, doi = {10.1142/S0218001493000339}
+@book{chollet2022,
+  author = {Chollet, Fran{\c{c}}ois and Kalinowski, Tomasz and Allaire, J. J.},
+  title = {Deep learning with {R}},
+  edition = {2},
+  publisher = {Manning Publications},
+  year = {2022}
 }
-@inproceedings{hadsell2006,
-  author = {Hadsell, Raia and Chopra, Sumit and LeCun, Yann},
-  title = {Dimensionality reduction by learning an invariant mapping},
-  booktitle = {2006 IEEE Computer Society Conference on Computer Vision and Pattern Recognition (CVPR'06)},
-  volume = {2}, pages = {1735--1742}, year = {2006}
+@article{gu2018,
+  author = {Gu, Jiuxiang and Wang, Zhenhua and Kuen, Jason and Ma, Lianyang and Shahroudy, Amir and Shuai, Bing and Liu, Ting and Wang, Xingxing and Wang, Gang and Cai, Jianfei and Chen, Tsuhan},
+  title = {Recent advances in convolutional neural networks},
+  journal = {Pattern Recognition},
+  volume = {77}, pages = {354--377}, year = {2018},
+  doi = {10.1016/j.patcog.2017.10.013}
+}
+@article{rehman2019,
+  author = {Rehman, Amjad and Naz, Saeeda and Razzak, Muhammad Imran},
+  title = {Writer identification using machine learning approaches: A comprehensive review},
+  journal = {Multimedia Tools and Applications},
+  volume = {78}, number = {8}, pages = {10889--10931}, year = {2019}
+}
+@article{he2019,
+  author = {He, Sheng and Schomaker, Lambert},
+  title = {Deep adaptive learning for writer identification based on single handwritten word images},
+  journal = {Pattern Recognition},
+  volume = {88}, pages = {64--74}, year = {2019},
+  doi = {10.1016/j.patcog.2018.11.003}
+}
+@incollection{chicco2021,
+  author = {Chicco, Davide},
+  title = {Siamese neural networks: An overview},
+  booktitle = {Artificial Neural Networks},
+  editor = {Cartwright, Hugh},
+  series = {Methods in Molecular Biology},
+  volume = {2190}, pages = {73--94},
+  publisher = {Humana Press}, year = {2021},
+  doi = {10.1007/978-1-0716-0826-5_3}
 }
 @article{roberts2017,
   author = {Roberts, David R. and Bahn, Volker and Ciuti, Simone and Boyce, Mark S. and Elith, Jane and Guillera-Arroita, Gurutzeta and Hauenstein, Severin and Lahoz-Monfort, Jos{\'e} J. and Schr{\"o}der, Boris and Thuiller, Wilfried and Warton, David I. and Wintle, Brendan A. and Hartig, Florian and Dormann, Carsten F.},
@@ -1240,108 +1494,56 @@ bib <- r"---(
   journal = {GigaScience},
   volume = {6}, number = {5}, pages = {gix019}, year = {2017}, doi = {10.1093/gigascience/gix019}
 }
-@inproceedings{nair2010,
-  author = {Nair, Vinod and Hinton, Geoffrey E.},
-  title = {Rectified linear units improve restricted {B}oltzmann machines},
-  booktitle = {Proceedings of the 27th International Conference on Machine Learning (ICML-10)},
-  pages = {807--814}, year = {2010}
+@article{kapoor2023,
+  author = {Kapoor, Sayash and Narayanan, Arvind},
+  title = {Leakage and the reproducibility crisis in machine-learning-based science},
+  journal = {Patterns},
+  volume = {4}, number = {9}, pages = {100804}, year = {2023},
+  doi = {10.1016/j.patter.2023.100804}
 }
-@article{srivastava2014,
-  author = {Srivastava, Nitish and Hinton, Geoffrey and Krizhevsky, Alex and Sutskever, Ilya and Salakhutdinov, Ruslan},
-  title = {Dropout: A simple way to prevent neural networks from overfitting},
+@article{probst2019,
+  author = {Probst, Philipp and Boulesteix, Anne-Laure and Bischl, Bernd},
+  title = {Tunability: Importance of hyperparameters of machine learning algorithms},
   journal = {Journal of Machine Learning Research},
-  volume = {15}, number = {56}, pages = {1929--1958}, year = {2014}
+  volume = {20}, number = {53}, pages = {1--32}, year = {2019}
 }
-@inproceedings{kingma2015,
-  author = {Kingma, Diederik P. and Ba, Jimmy},
-  title = {Adam: A method for stochastic optimization},
-  booktitle = {3rd International Conference on Learning Representations (ICLR 2015)},
-  year = {2015}
+@article{bischl2023,
+  author = {Bischl, Bernd and Binder, Martin and Lang, Michel and Pielok, Tobias and Richter, Jakob and Coors, Stefan and Thomas, Janek and Ullmann, Theresa and Becker, Marc and Boulesteix, Anne-Laure and Deng, Difan and Lindauer, Marius},
+  title = {Hyperparameter optimization: Foundations, algorithms, best practices, and open challenges},
+  journal = {WIREs Data Mining and Knowledge Discovery},
+  volume = {13}, number = {2}, pages = {e1484}, year = {2023},
+  doi = {10.1002/widm.1484}
 }
-@article{clopper1934,
-  author = {Clopper, C. J. and Pearson, E. S.},
-  title = {The use of confidence or fiducial limits illustrated in the case of the binomial},
-  journal = {Biometrika},
-  volume = {26}, number = {4}, pages = {404--413}, year = {1934}
+@book{efron2016,
+  author = {Efron, Bradley and Hastie, Trevor},
+  title = {Computer age statistical inference: Algorithms, evidence, and data science},
+  publisher = {Cambridge University Press},
+  year = {2016}
 }
-@article{efron1979,
-  author = {Efron, B.},
-  title = {Bootstrap methods: Another look at the jackknife},
-  journal = {The Annals of Statistics},
-  volume = {7}, number = {1}, pages = {1--26}, year = {1979}, doi = {10.1214/aos/1176344552}
+@article{saravanan2020,
+  author = {Saravanan, Varun and Berman, Gordon J. and Sober, Samuel J.},
+  title = {Application of the hierarchical bootstrap to multi-level data in neuroscience},
+  journal = {Neurons, Behavior, Data Analysis, and Theory},
+  volume = {3}, number = {5}, pages = {1--25}, year = {2020}
 }
-@article{field2007,
-  author = {Field, C. A. and Welsh, A. H.},
-  title = {Bootstrapping clustered data},
-  journal = {Journal of the Royal Statistical Society: Series B (Statistical Methodology)},
-  volume = {69}, number = {3}, pages = {369--390}, year = {2007}
+@book{agresti2019,
+  author = {Agresti, Alan},
+  title = {An introduction to categorical data analysis},
+  edition = {3},
+  publisher = {Wiley},
+  year = {2019}
 }
-@article{friedman1937,
-  author = {Friedman, Milton},
-  title = {The use of ranks to avoid the assumption of normality implicit in the analysis of variance},
-  journal = {Journal of the American Statistical Association},
-  volume = {32}, number = {200}, pages = {675--701}, year = {1937}
+@article{goulet2018,
+  author = {Goulet-Pelletier, Jean-Christophe and Cousineau, Denis},
+  title = {A review of effect sizes and their confidence intervals, Part {I}: The {Cohen's} d family},
+  journal = {The Quantitative Methods for Psychology},
+  volume = {14}, number = {4}, pages = {242--265}, year = {2018}
 }
-@article{wilcoxon1945,
-  author = {Wilcoxon, Frank},
-  title = {Individual comparisons by ranking methods},
-  journal = {Biometrics Bulletin},
-  volume = {1}, number = {6}, pages = {80--83}, year = {1945}
-}
-@article{holm1979,
-  author = {Holm, Sture},
-  title = {A simple sequentially rejective multiple test procedure},
-  journal = {Scandinavian Journal of Statistics},
-  volume = {6}, number = {2}, pages = {65--70}, year = {1979}
-}
-@article{lakens2013,
-  author = {Lakens, Dani{\"e}l},
-  title = {Calculating and reporting effect sizes to facilitate cumulative science: A practical primer for t-tests and {ANOVA}s},
-  journal = {Frontiers in Psychology},
-  volume = {4}, pages = {863}, year = {2013}, doi = {10.3389/fpsyg.2013.00863}
-}
-@inproceedings{brodersen2010,
-  author = {Brodersen, Kay Henning and Ong, Cheng Soon and Stephan, Klaas Enno and Buhmann, Joachim M.},
-  title = {The balanced accuracy and its posterior distribution},
-  booktitle = {2010 20th International Conference on Pattern Recognition (ICPR)},
-  pages = {3121--3124}, year = {2010}
-}
-@article{fawcett2006,
-  author = {Fawcett, Tom},
-  title = {An introduction to {ROC} analysis},
-  journal = {Pattern Recognition Letters},
-  volume = {27}, number = {8}, pages = {861--874}, year = {2006}
-}
-@article{hanley1982,
-  author = {Hanley, James A. and McNeil, Barbara J.},
-  title = {The meaning and use of the area under a receiver operating characteristic ({ROC}) curve},
-  journal = {Radiology},
-  volume = {143}, number = {1}, pages = {29--36}, year = {1982}
-}
-@online{afzali2026,
-  author  = {Afzali, R.},
-  title   = {Why do we normalize images?},
-  year    = {2026},
-  url     = {https://medium.com/@rohollah2afzali/why-do-we-normalize-images-aa51ec704d86},
-  note    = {Medium. Accessed: October 12, 2026}
-}
-
-
-@online{williams2019,
-  author  = {Williams, L.},
-  title   = {What are the 12 characteristics of handwriting?},
-  year    = {2019},
-  journal = {The Pen Company Blog},
-  url     = {https://www.thepencompany.com/blog/handwriting/what-are-the-12-characteristics-of-handwriting/},
-  note    = {Accessed: 13 October 2026}
-}
-
-@online{singh2025,
-  author = {Singh, K.},
-  title  = {Understanding hyperparameter tuning with CNN example},
-  year   = {2025},
-  url    = {https://medium.com/@kamalmeet/understanding-hyperparameter-tuning-with-cnn-example-d782b08fd514},
-  note   = {Medium. Accessed: 14 October 2026}
+@article{luque2019,
+  author = {Luque, Amalia and Carrasco, Alejandro and Mart{\'i}n, Alejandro and de las Heras, Ana},
+  title = {The impact of class imbalance in classification performance metrics based on the binary confusion matrix},
+  journal = {Pattern Recognition},
+  volume = {91}, pages = {216--231}, year = {2019}
 }
 )---"
 bib <- trimws(bib)
